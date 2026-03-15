@@ -221,3 +221,7 @@ COLAB_LIVE=1 uv run --extra dev pytest tests/live -m live
 - **No Drive mount**: Colab's Drive mount requires a browser-based consent flow not yet supported
 - **Rich output**: Images/HTML from notebooks are not rendered — text/plain fallback only
 - **Undocumented API**: Built on Colab's internal API which may change without notice
+
+## Support
+
+If you enjoy this project, buy me some tokens: [buymeacoffee.com/amircs](https://buymeacoffee.com/amircs)
