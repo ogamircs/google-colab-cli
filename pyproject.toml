@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "colab-cli"
+version = "0.1.0"
+description = "CLI for running local Python scripts and notebooks on Google Colab runtimes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "OpenAI Codex" },
+]
+dependencies = [
+  "httpx>=0.27.0",
+  "pydantic>=2.7.0",
+  "typer>=0.12.0",
+  "websockets>=12.0",
+  "google-auth>=2.29.0",
+  "google-auth-oauthlib>=1.2.0",
+  "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+colab = "colab_cli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/colab_cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+  "live: integration tests that require a configured Google Colab account",
+]
