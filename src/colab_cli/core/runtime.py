@@ -57,6 +57,10 @@ class RuntimeManager:
         accelerator: str | None = None,
         authuser: int | None = None,
     ) -> StatusResult:
+        existing = self.connection_store.load()
+        if existing is not None:
+            return self.status()
+
         token = self.credentials.get_valid_token()
         accelerator_name = accelerator or self.config.default_accelerator
         authuser_value = self.config.default_authuser if authuser is None else authuser

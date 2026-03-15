@@ -119,6 +119,12 @@ class JupyterRestClient:
 
     async def download_file(self, remote_path: str, local_path: Path) -> Path:
         content = await self.get_contents(remote_path)
-        local_path.write_bytes(decode_contents_payload(content))
-        return local_path
+        target_path = local_path
+        if target_path.is_dir():
+            target_path = target_path / _remote_basename(remote_path)
+        target_path.write_bytes(decode_contents_payload(content))
+        return target_path
 
+
+def _remote_basename(remote_path: str) -> str:
+    return Path(remote_path.rstrip("/")).name or "download"

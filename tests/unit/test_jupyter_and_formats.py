@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from colab_cli.core.jupyter.rest import decode_contents_payload, encode_contents_payload
+from colab_cli.core.jupyter.rest import JupyterRestClient, decode_contents_payload, encode_contents_payload
 from colab_cli.core.jupyter.ws import KernelMessageAccumulator
 from colab_cli.errors import ExecutionError
 from colab_cli.formats.notebook import extract_code_cells
@@ -37,6 +37,38 @@ def test_decode_contents_payload_round_trips_binary() -> None:
     )
 
     assert decode_contents_payload(content) == b"\xff\x00\x01"
+
+
+@pytest.mark.asyncio
+async def test_download_file_uses_remote_basename_for_directory_targets(tmp_path: Path) -> None:
+    client = JupyterRestClient(
+        base_url="https://proxy.example.com",
+        access_token="access-token",
+        proxy_token="proxy-token",
+    )
+
+    async def fake_get_contents(path: str) -> JupyterContent:
+        assert path == "/content/results.csv"
+        return JupyterContent(
+            name="results.csv",
+            path=path,
+            type="file",
+            format="text",
+            content="value\n1\n",
+        )
+
+    client.get_contents = fake_get_contents  # type: ignore[method-assign]
+
+    try:
+        download_dir = tmp_path / "downloads"
+        download_dir.mkdir()
+
+        result = await client.download_file("/content/results.csv", download_dir)
+    finally:
+        await client.aclose()
+
+    assert result == download_dir / "results.csv"
+    assert result.read_text() == "value\n1\n"
 
 
 def test_kernel_message_accumulator_collects_streams_and_outputs() -> None:

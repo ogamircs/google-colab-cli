@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from colab_cli.models import TokenData
@@ -23,9 +24,12 @@ class TokenStore:
 
     def save(self, token: TokenData) -> None:
         ensure_app_config_dir(self._home)
-        self.path.write_text(token.model_dump_json(indent=2))
+        payload = token.model_dump_json(indent=2)
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        self.path.chmod(0o600)
 
     def delete(self) -> None:
         if self.path.exists():
             self.path.unlink()
-

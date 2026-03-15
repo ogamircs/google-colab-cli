@@ -37,9 +37,11 @@ class FakeCredentials:
 
 class FakeColabClient:
     def __init__(self) -> None:
+        self.assign_calls = 0
         self.unassigned: list[str] = []
 
     async def assign_runtime(self, **_: object) -> AssignedRuntime:
+        self.assign_calls += 1
         return AssignedRuntime(
             endpoint="endpoint-123",
             accelerator="T4",
@@ -143,6 +145,41 @@ async def test_connect_saves_active_connection(tmp_path: Path) -> None:
     assert status.connected is True
     assert stored is not None
     assert stored.endpoint_id == "endpoint-123"
+    assert colab_client.assign_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_connect_reuses_existing_connection(tmp_path: Path) -> None:
+    connection_store = ConnectionStore(home=tmp_path)
+    existing = ActiveConnection(
+        notebook_hash="existing-hash",
+        endpoint_id="existing-endpoint",
+        proxy_url="https://proxy.example.com",
+        proxy_token="existing-token",
+        proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        accelerator="T4",
+        authuser=0,
+        keepalive_pid=4321,
+    )
+    connection_store.save(existing)
+    colab_client = FakeColabClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=lambda: colab_client,
+        spawn_keepalive=False,
+    )
+
+    status = await manager.connect(accelerator="t4")
+
+    stored = connection_store.load()
+    assert status.connected is True
+    assert status.endpoint == "existing-endpoint"
+    assert stored is not None
+    assert stored.endpoint_id == "existing-endpoint"
+    assert stored.keepalive_pid == 4321
+    assert colab_client.assign_calls == 0
 
 
 @pytest.mark.asyncio
