@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ def encode_contents_payload(data: bytes) -> dict[str, str]:
 def decode_contents_payload(content: JupyterContent) -> bytes:
     if content.format == "base64" and isinstance(content.content, str):
         return base64.b64decode(content.content)
+    if content.format == "json" and content.content is not None:
+        return json.dumps(content.content, ensure_ascii=False).encode("utf-8")
     if isinstance(content.content, str):
         return content.content.encode("utf-8")
     return b""

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -124,3 +126,23 @@ def test_connection_store_delete_clears_file(tmp_path) -> None:
     store.delete()
 
     assert store.load() is None
+
+
+def test_connection_store_saves_active_state_with_owner_only_permissions(tmp_path) -> None:
+    store = ConnectionStore(home=tmp_path)
+    connection = ActiveConnection(
+        notebook_hash="hash",
+        endpoint_id="endpoint",
+        proxy_url="https://proxy.example.com",
+        proxy_token="proxy-token",
+        proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        accelerator="T4",
+        authuser=0,
+    )
+    original_umask = os.umask(0)
+    try:
+        store.save(connection)
+    finally:
+        os.umask(original_umask)
+
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600

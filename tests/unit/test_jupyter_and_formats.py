@@ -39,6 +39,24 @@ def test_decode_contents_payload_round_trips_binary() -> None:
     assert decode_contents_payload(content) == b"\xff\x00\x01"
 
 
+def test_decode_contents_payload_serializes_json_content() -> None:
+    notebook = {
+        "cells": [{"cell_type": "code", "source": ["print('hello')\n"]}],
+        "metadata": {"kernelspec": {"name": "python3"}},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    content = JupyterContent(
+        name="notebook.ipynb",
+        path="/content/notebook.ipynb",
+        type="notebook",
+        format="json",
+        content=notebook,
+    )
+
+    assert json.loads(decode_contents_payload(content).decode("utf-8")) == notebook
+
+
 @pytest.mark.asyncio
 async def test_download_file_uses_remote_basename_for_directory_targets(tmp_path: Path) -> None:
     client = JupyterRestClient(
