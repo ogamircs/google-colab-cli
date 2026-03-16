@@ -32,6 +32,11 @@ def should_refresh_soon(
     if expires_at is None:
         return True
     current = now or utc_now()
+    # Normalize both to offset-aware UTC for comparison
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
     return expires_at <= current + threshold
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from colab_cli.cli import app
-from colab_cli.models import RunResult, StatusResult, UserInfo
+from colab_cli.models import RunResult, StatusResult, TokenData, UserInfo
 
 runner = CliRunner()
 
@@ -70,9 +70,25 @@ class FakeRuntimeManager:
         return [JupyterContent(name="file.txt", path=f"{remote_path}/file.txt", type="file")]
 
 
+class FakeTokenStore:
+    def __init__(self, token: TokenData | None = None) -> None:
+        self._token = token
+
+    def load(self) -> TokenData | None:
+        return self._token
+
+
 class FakeCredentialManager:
     def __init__(self, *args, **kwargs) -> None:
-        pass
+        self.token_store = FakeTokenStore(
+            TokenData(
+                access_token="access",
+                refresh_token="refresh",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                scope="openid",
+                token_type="Bearer",
+            )
+        )
 
     def save_token(self, token) -> None:
         self.saved = token
@@ -81,15 +97,22 @@ class FakeCredentialManager:
         return None
 
     def get_valid_token(self):
-        from colab_cli.models import TokenData
+        return self.token_store.load()
 
-        return TokenData(
-            access_token="access",
-            refresh_token="refresh",
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
-            scope="openid",
-            token_type="Bearer",
-        )
+
+def _patch_auth(monkeypatch):
+    """Apply common auth monkeypatches and return them for further customisation."""
+    from colab_cli.models import AppConfig, OAuthConfig
+
+    monkeypatch.setattr(
+        "colab_cli.cli.auth.load_app_config",
+        lambda: AppConfig(oauth=OAuthConfig(client_id="client.apps.googleusercontent.com", client_secret="secret")),
+    )
+    monkeypatch.setattr("colab_cli.cli.auth.CredentialManager", FakeCredentialManager)
+    monkeypatch.setattr(
+        "colab_cli.cli.auth.fetch_user_info",
+        lambda access_token: UserInfo(email="user@example.com", name="Example User"),
+    )
 
 
 def test_status_json(monkeypatch) -> None:
@@ -137,13 +160,7 @@ def test_push_pull_and_ls(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_login_and_whoami(monkeypatch) -> None:
-    from colab_cli.models import AppConfig, OAuthConfig, TokenData
-
-    monkeypatch.setattr(
-        "colab_cli.cli.auth.load_app_config",
-        lambda: AppConfig(oauth=OAuthConfig(client_id="client.apps.googleusercontent.com", client_secret="secret")),
-    )
-    monkeypatch.setattr("colab_cli.cli.auth.CredentialManager", FakeCredentialManager)
+    _patch_auth(monkeypatch)
     monkeypatch.setattr(
         "colab_cli.cli.auth.run_oauth_login",
         lambda config, open_browser=True: TokenData(
@@ -154,15 +171,88 @@ def test_login_and_whoami(monkeypatch) -> None:
             token_type="Bearer",
         ),
     )
-    monkeypatch.setattr(
-        "colab_cli.cli.auth.fetch_user_info",
-        lambda access_token: UserInfo(email="user@example.com", name="Example User"),
-    )
 
-    login_result = runner.invoke(app, ["login", "--no-browser"])
-    whoami_result = runner.invoke(app, ["whoami", "--json"])
+    login_result = runner.invoke(app, ["auth", "login", "--no-browser"])
+    whoami_result = runner.invoke(app, ["auth", "whoami", "--json"])
 
     assert login_result.exit_code == 0
     assert whoami_result.exit_code == 0
     assert "Logged in as user@example.com" in login_result.stderr
     assert '"email": "user@example.com"' in whoami_result.stdout
+
+
+def test_auth_status_authenticated(monkeypatch) -> None:
+    _patch_auth(monkeypatch)
+
+    result = runner.invoke(app, ["auth", "status"])
+
+    assert result.exit_code == 0
+    assert "Authenticated as user@example.com" in result.stdout
+
+
+def test_auth_status_refreshes_expired_token(monkeypatch) -> None:
+    _patch_auth(monkeypatch)
+
+    class RefreshingCredentialManager(FakeCredentialManager):
+        def __init__(self, *args, **kwargs) -> None:
+            self.token_store = FakeTokenStore(
+                TokenData(
+                    access_token="expired-access",
+                    refresh_token="refresh",
+                    expires_at=datetime.now(UTC) - timedelta(minutes=5),
+                    scope="openid",
+                    token_type="Bearer",
+                )
+            )
+
+        def get_valid_token(self) -> TokenData:
+            return TokenData(
+                access_token="fresh-access",
+                refresh_token="refresh",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                scope="openid",
+                token_type="Bearer",
+            )
+
+    monkeypatch.setattr("colab_cli.cli.auth.CredentialManager", RefreshingCredentialManager)
+
+    result = runner.invoke(app, ["auth", "status", "--json"])
+
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.stdout)
+    assert data["authenticated"] is True
+    assert data["email"] == "user@example.com"
+    assert data["expires_at"] is not None
+
+
+def test_auth_status_not_authenticated(monkeypatch) -> None:
+    _patch_auth(monkeypatch)
+
+    # Override with a FakeCredentialManager whose token_store returns None
+    class NoTokenCredentialManager(FakeCredentialManager):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.token_store = FakeTokenStore(None)
+
+    monkeypatch.setattr("colab_cli.cli.auth.CredentialManager", NoTokenCredentialManager)
+
+    result = runner.invoke(app, ["auth", "status"])
+
+    assert result.exit_code == 0
+    assert "Not authenticated" in result.stdout
+
+
+def test_auth_status_json(monkeypatch) -> None:
+    _patch_auth(monkeypatch)
+
+    result = runner.invoke(app, ["auth", "status", "--json"])
+
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.stdout)
+    assert data["authenticated"] is True
+    assert data["email"] == "user@example.com"
+    assert data["expires_at"] is not None
