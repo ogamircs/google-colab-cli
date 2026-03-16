@@ -190,6 +190,43 @@ def test_auth_status_authenticated(monkeypatch) -> None:
     assert "Authenticated as user@example.com" in result.stdout
 
 
+def test_auth_status_refreshes_expired_token(monkeypatch) -> None:
+    _patch_auth(monkeypatch)
+
+    class RefreshingCredentialManager(FakeCredentialManager):
+        def __init__(self, *args, **kwargs) -> None:
+            self.token_store = FakeTokenStore(
+                TokenData(
+                    access_token="expired-access",
+                    refresh_token="refresh",
+                    expires_at=datetime.now(UTC) - timedelta(minutes=5),
+                    scope="openid",
+                    token_type="Bearer",
+                )
+            )
+
+        def get_valid_token(self) -> TokenData:
+            return TokenData(
+                access_token="fresh-access",
+                refresh_token="refresh",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                scope="openid",
+                token_type="Bearer",
+            )
+
+    monkeypatch.setattr("colab_cli.cli.auth.CredentialManager", RefreshingCredentialManager)
+
+    result = runner.invoke(app, ["auth", "status", "--json"])
+
+    assert result.exit_code == 0
+    import json
+
+    data = json.loads(result.stdout)
+    assert data["authenticated"] is True
+    assert data["email"] == "user@example.com"
+    assert data["expires_at"] is not None
+
+
 def test_auth_status_not_authenticated(monkeypatch) -> None:
     _patch_auth(monkeypatch)
 

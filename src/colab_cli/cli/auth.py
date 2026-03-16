@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 
 import typer
 
 from colab_cli.config import load_app_config
 from colab_cli.core.auth.credentials import CredentialManager
 from colab_cli.core.auth.oauth import fetch_user_info, run_oauth_login
+from colab_cli.errors import AuthError
 from colab_cli.formats.output import format_json
-from colab_cli.utils import should_refresh_soon, utc_now
 
 auth_app = typer.Typer(no_args_is_help=True)
 
@@ -51,13 +50,16 @@ def status(as_json: bool = typer.Option(False, "--json", help="Emit JSON output.
     """Check authentication state without triggering login flows."""
     config = load_app_config()
     manager = CredentialManager(config=config)
-    token = manager.token_store.load()
+    try:
+        token = manager.get_valid_token()
+    except AuthError:
+        token = None
 
     authenticated = False
     email: str | None = None
     expires_at: str | None = None
 
-    if token is not None and not should_refresh_soon(token.expires_at, threshold=timedelta(0)):
+    if token is not None:
         authenticated = True
         expires_at = token.expires_at.isoformat() if token.expires_at else None
         try:
