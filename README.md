@@ -6,7 +6,7 @@ A CLI for running Python scripts and notebooks on Google Colab runtimes from you
 
 ```bash
 # One-time setup
-colab login                              # Browser OAuth
+colab auth login                         # Browser OAuth
 colab connect --gpu t4                   # Allocate GPU runtime
 
 # Run code
@@ -72,7 +72,7 @@ export COLAB_CLIENT_SECRET="YOUR_CLIENT_SECRET"
 ### 4. Login
 
 ```bash
-colab login
+colab auth login
 ```
 
 This opens your browser. You'll see an "unverified app" warning — click **Advanced > Go to colab-cli (unsafe)**. This is normal for personal GCP projects. Grant access and you're done. The refresh token is stored locally and auto-refreshed — you only need to login once.
@@ -82,10 +82,11 @@ This opens your browser. You'll see an "unverified app" warning — click **Adva
 ### Auth
 
 ```bash
-colab login                    # Browser OAuth, stores refresh token
-colab login --no-browser       # Manual code paste flow
-colab logout                   # Clear stored tokens
-colab whoami [--json]          # Show authenticated user
+colab auth login               # Browser OAuth, stores refresh token
+colab auth login --no-browser  # Manual code paste flow
+colab auth logout              # Clear stored tokens
+colab auth whoami [--json]     # Show authenticated user
+colab auth status [--json]     # Check whether stored auth is still usable
 ```
 
 ### Runtime
@@ -127,10 +128,11 @@ The CLI is designed as a tool for AI coding agents:
 
 ```bash
 # Human sets up once:
-colab login
+colab auth login
 colab connect --gpu t4
 
 # Agent uses these commands:
+colab auth status --json                 # Check auth state first
 colab status --json                      # Check runtime health
 colab push model.py /content/model.py    # Upload code
 colab run model.py --json                # Execute, parse results

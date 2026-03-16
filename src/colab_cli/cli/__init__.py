@@ -6,11 +6,12 @@ import typer
 
 from colab_cli.errors import AuthError, ColabCliError, ColabRuntimeError, ConnectionError, ExecutionError
 
-from . import auth, connect, files, run
+from . import connect, files, run
+from .auth import auth_app
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
-auth.register(app)
+app.add_typer(auth_app, name="auth")
 connect.register(app)
 run.register(app)
 files.register(app)
@@ -35,4 +36,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

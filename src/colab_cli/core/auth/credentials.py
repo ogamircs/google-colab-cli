@@ -33,7 +33,7 @@ class CredentialManager:
     def load_token(self) -> TokenData:
         token = self.token_store.load()
         if token is None:
-            raise AuthError("No stored login found. Run `colab login` first.")
+            raise AuthError("No stored login found. Run `colab auth login` first.")
         return token
 
     def get_valid_token(self) -> TokenData:
