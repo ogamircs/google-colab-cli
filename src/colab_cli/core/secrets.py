@@ -7,24 +7,34 @@ from pathlib import Path
 from colab_cli.errors import ConfigError
 
 
+def parse_key_value(raw: str) -> tuple[str, str]:
+    """Parse a KEY=VALUE string, stripping whitespace and optional surrounding quotes."""
+    if "=" not in raw:
+        raise ConfigError(f"Invalid secret format: {raw!r} — expected KEY=VALUE")
+    key, value = raw.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return key, value
+
+
 def parse_secrets_file(path: Path) -> dict[str, str]:
     """Parse a .env-style secrets file into a dict of key-value pairs."""
-    if not path.exists():
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
         raise ConfigError(f"Secrets file not found: {path}")
 
     secrets: dict[str, str] = {}
-    for lineno, raw_line in enumerate(path.read_text().splitlines(), start=1):
+    for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if "=" not in line:
+        try:
+            key, value = parse_key_value(line)
+        except ConfigError:
             raise ConfigError(f"Invalid secret at {path}:{lineno} — expected KEY=VALUE")
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        # Strip matching surrounding quotes
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
         secrets[key] = value
     return secrets
 

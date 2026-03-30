@@ -8,7 +8,8 @@ from pathlib import Path
 import typer
 
 from colab_cli.core.runtime import create_runtime_manager
-from colab_cli.core.secrets import parse_secrets_file
+from colab_cli.core.secrets import parse_key_value, parse_secrets_file
+from colab_cli.errors import ConfigError
 from colab_cli.formats.output import format_json
 from colab_cli.models import RunResult
 
@@ -22,10 +23,11 @@ def _collect_secrets(
     if secrets_file is not None:
         merged.update(parse_secrets_file(secrets_file))
     for item in secret or []:
-        if "=" not in item:
+        try:
+            key, value = parse_key_value(item)
+        except ConfigError:
             raise typer.BadParameter(f"Invalid secret format: {item!r} — expected KEY=VALUE")
-        key, value = item.split("=", 1)
-        merged[key.strip()] = value.strip()
+        merged[key] = value
     return merged
 
 
@@ -69,7 +71,7 @@ def _run_command(
     secrets: dict[str, str] | None = None,
 ) -> RunResult:
     if code is not None:
-        return asyncio.run(manager.run_code(code, source_name="inline.py", on_stream=on_stream, secrets=secrets or None))
+        return asyncio.run(manager.run_code(code, source_name="inline.py", on_stream=on_stream, secrets=secrets))
     assert target is not None
     if target.suffix == ".ipynb":
         return asyncio.run(
@@ -77,10 +79,10 @@ def _run_command(
                 target,
                 on_stream=on_stream,
                 on_cell_start=lambda index, total: typer.echo(f"[{index}/{total}] running cell", err=True),
-                secrets=secrets or None,
+                secrets=secrets,
             )
         )
-    return asyncio.run(manager.run_script(target, on_stream=on_stream, secrets=secrets or None))
+    return asyncio.run(manager.run_script(target, on_stream=on_stream, secrets=secrets))
 
 
 def _emit_non_stream_outputs(result: RunResult) -> None:

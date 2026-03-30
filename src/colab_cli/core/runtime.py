@@ -149,21 +149,10 @@ class RuntimeManager:
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=source_name)
-        token = self.credentials.get_valid_token()
-        kernel_client = self._kernel_client_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-            kernel_id=connection.kernel_id,
-        )
-        if secrets:
-            setup = await kernel_client.execute(
-                build_secrets_setup_code(secrets),
-                cell_index=0,
-                allow_stdin=False,
-            )
-            if setup.status == "error":
-                return _cell_to_run_result(setup, duration_seconds=time.monotonic() - started)
+        kernel_client = self._make_kernel_client(connection)
+        error = await self._inject_secrets(kernel_client, secrets, started)
+        if error:
+            return error
         cell = await kernel_client.execute(
             code,
             cell_index=0,
@@ -199,28 +188,10 @@ class RuntimeManager:
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=path.name)
-        token = self.credentials.get_valid_token()
-        kernel_client = self._kernel_client_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-            kernel_id=connection.kernel_id,
-        )
-        if secrets:
-            setup = await kernel_client.execute(
-                build_secrets_setup_code(secrets),
-                cell_index=0,
-                allow_stdin=False,
-            )
-            if setup.status == "error":
-                return RunResult(
-                    status="error",
-                    exit_code=1,
-                    stderr=setup.stderr,
-                    error=setup.error,
-                    traceback=setup.traceback,
-                    duration_seconds=time.monotonic() - started,
-                )
+        kernel_client = self._make_kernel_client(connection)
+        error = await self._inject_secrets(kernel_client, secrets, started)
+        if error:
+            return error
         cells = extract_code_cells(path)
         results: list[CellResult] = []
         for index, code in enumerate(cells):
@@ -312,6 +283,30 @@ class RuntimeManager:
         finally:
             await _maybe_aclose(client)
         return self.status()
+
+    def _make_kernel_client(self, connection: ActiveConnection) -> Any:
+        token = self.credentials.get_valid_token()
+        return self._kernel_client_factory(
+            base_url=connection.proxy_url,
+            access_token=token.access_token,
+            proxy_token=connection.proxy_token,
+            kernel_id=connection.kernel_id,
+        )
+
+    async def _inject_secrets(
+        self, kernel_client: Any, secrets: dict[str, str] | None, started: float
+    ) -> RunResult | None:
+        """Execute secrets setup cell. Returns RunResult on failure, None on success."""
+        if not secrets:
+            return None
+        setup = await kernel_client.execute(
+            build_secrets_setup_code(secrets),
+            cell_index=0,
+            allow_stdin=False,
+        )
+        if setup.status == "error":
+            return _cell_to_run_result(setup, duration_seconds=time.monotonic() - started)
+        return None
 
     async def _ensure_connection(self) -> ActiveConnection:
         connection = self.connection_store.load()
