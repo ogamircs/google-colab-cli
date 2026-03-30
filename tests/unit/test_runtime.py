@@ -102,7 +102,7 @@ class FakeKernelClient:
 
     async def execute(self, code: str, *, cell_index: int = 0, allow_stdin: bool = False, on_stream=None, timeout_seconds: float = 300.0) -> CellResult:
         self.calls.append(code)
-        if "raise" in code:
+        if code.strip().startswith("raise"):
             return CellResult(
                 index=cell_index,
                 source=code,
@@ -316,6 +316,109 @@ async def test_push_pull_and_ls_use_jupyter_client(tmp_path: Path) -> None:
     assert jupyter.uploads == [(local_file, "/content/upload.txt")]
     assert jupyter.downloads == [("/content/upload.txt", download_path)]
     assert items[0].name == "example.txt"
+
+
+@pytest.mark.asyncio
+async def test_run_code_with_secrets_injects_setup_cell(tmp_path: Path) -> None:
+    connection_store = ConnectionStore(home=tmp_path)
+    connection_store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+        )
+    )
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    result = await manager.run_code("print('hello')", secrets={"MY_KEY": "my_val"})
+
+    assert result.status == "success"
+    assert len(kernel_client.calls) == 2
+    assert "google.colab.userdata" in kernel_client.calls[0]
+    assert kernel_client.calls[1] == "print('hello')"
+
+
+@pytest.mark.asyncio
+async def test_run_code_without_secrets_no_setup_cell(tmp_path: Path) -> None:
+    connection_store = ConnectionStore(home=tmp_path)
+    connection_store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+        )
+    )
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    result = await manager.run_code("print('hello')")
+
+    assert result.status == "success"
+    assert len(kernel_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_notebook_with_secrets_injects_setup_before_cells(tmp_path: Path) -> None:
+    connection_store = ConnectionStore(home=tmp_path)
+    connection_store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+        )
+    )
+    notebook_path = tmp_path / "nb.ipynb"
+    notebook_path.write_text(
+        '{"cells":[{"cell_type":"code","source":["print(1)"]},{"cell_type":"code","source":["print(2)"]}]}'
+    )
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    result = await manager.run_notebook(notebook_path, secrets={"K": "V"})
+
+    assert result.status == "success"
+    # Setup cell + 2 user cells = 3 kernel calls
+    assert len(kernel_client.calls) == 3
+    assert "google.colab.userdata" in kernel_client.calls[0]
+    # Setup cell should NOT be in the result cells
+    assert len(result.cells) == 2
 
 
 def test_create_runtime_manager_can_skip_missing_config_for_status(tmp_path: Path) -> None:

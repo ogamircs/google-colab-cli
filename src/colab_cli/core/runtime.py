@@ -20,6 +20,7 @@ from colab_cli.core.connection import ConnectionStore
 from colab_cli.core.jupyter.rest import JupyterRestClient
 from colab_cli.core.jupyter.ws import KernelWebSocketClient
 from colab_cli.errors import ConfigError, ConnectionError
+from colab_cli.core.secrets import build_secrets_setup_code
 from colab_cli.formats.notebook import extract_code_cells
 from colab_cli.models import (
     ActiveConnection,
@@ -144,6 +145,7 @@ class RuntimeManager:
         source_name: str = "inline.py",
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=source_name)
@@ -154,6 +156,14 @@ class RuntimeManager:
             proxy_token=connection.proxy_token,
             kernel_id=connection.kernel_id,
         )
+        if secrets:
+            setup = await kernel_client.execute(
+                build_secrets_setup_code(secrets),
+                cell_index=0,
+                allow_stdin=False,
+            )
+            if setup.status == "error":
+                return _cell_to_run_result(setup, duration_seconds=time.monotonic() - started)
         cell = await kernel_client.execute(
             code,
             cell_index=0,
@@ -168,12 +178,14 @@ class RuntimeManager:
         *,
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> RunResult:
         return await self.run_code(
             path.read_text(),
             source_name=path.name,
             allow_stdin=allow_stdin,
             on_stream=on_stream,
+            secrets=secrets,
         )
 
     async def run_notebook(
@@ -183,6 +195,7 @@ class RuntimeManager:
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
         on_cell_start: Callable[[int, int], Any] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=path.name)
@@ -193,6 +206,21 @@ class RuntimeManager:
             proxy_token=connection.proxy_token,
             kernel_id=connection.kernel_id,
         )
+        if secrets:
+            setup = await kernel_client.execute(
+                build_secrets_setup_code(secrets),
+                cell_index=0,
+                allow_stdin=False,
+            )
+            if setup.status == "error":
+                return RunResult(
+                    status="error",
+                    exit_code=1,
+                    stderr=setup.stderr,
+                    error=setup.error,
+                    traceback=setup.traceback,
+                    duration_seconds=time.monotonic() - started,
+                )
         cells = extract_code_cells(path)
         results: list[CellResult] = []
         for index, code in enumerate(cells):

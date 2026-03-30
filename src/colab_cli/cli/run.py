@@ -7,9 +7,26 @@ from pathlib import Path
 
 import typer
 
+from colab_cli.core.runtime import create_runtime_manager
+from colab_cli.core.secrets import parse_secrets_file
 from colab_cli.formats.output import format_json
 from colab_cli.models import RunResult
-from colab_cli.core.runtime import create_runtime_manager
+
+
+def _collect_secrets(
+    secret: list[str] | None,
+    secrets_file: Path | None,
+) -> dict[str, str]:
+    """Merge secrets from file and CLI flags. CLI flags win on conflict."""
+    merged: dict[str, str] = {}
+    if secrets_file is not None:
+        merged.update(parse_secrets_file(secrets_file))
+    for item in secret or []:
+        if "=" not in item:
+            raise typer.BadParameter(f"Invalid secret format: {item!r} — expected KEY=VALUE")
+        key, value = item.split("=", 1)
+        merged[key.strip()] = value.strip()
+    return merged
 
 
 def register(app: typer.Typer) -> None:
@@ -17,14 +34,17 @@ def register(app: typer.Typer) -> None:
     def run(
         target: Path | None = typer.Argument(None, exists=True, readable=True, resolve_path=True),
         code: str | None = typer.Option(None, "--code", "-c", help="Inline Python code to execute."),
+        secret: list[str] | None = typer.Option(None, "--secret", "-s", help="Secret as KEY=VALUE (repeatable)."),
+        secrets_file: Path | None = typer.Option(None, "--secrets-file", exists=True, readable=True, resolve_path=True, help="Path to file with KEY=VALUE secrets."),
         as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
     ) -> None:
         if bool(target) == bool(code):
             raise typer.BadParameter("Provide exactly one of a file path or --code.")
 
+        secrets = _collect_secrets(secret, secrets_file)
         manager = create_runtime_manager(spawn_keepalive=False)
         if as_json:
-            result = _run_command(manager, target, code)
+            result = _run_command(manager, target, code, secrets=secrets)
             typer.echo(format_json(result))
             if result.exit_code:
                 raise typer.Exit(code=result.exit_code)
@@ -33,7 +53,7 @@ def register(app: typer.Typer) -> None:
         def on_stream(channel: str, text: str) -> None:
             typer.echo(text, nl=False, err=channel == "stderr")
 
-        result = _run_command(manager, target, code, on_stream=on_stream)
+        result = _run_command(manager, target, code, on_stream=on_stream, secrets=secrets)
         _emit_non_stream_outputs(result)
         if result.traceback:
             typer.echo("\n".join(result.traceback), err=True)
@@ -41,9 +61,15 @@ def register(app: typer.Typer) -> None:
             raise typer.Exit(code=result.exit_code)
 
 
-def _run_command(manager, target: Path | None, code: str | None, on_stream=None) -> RunResult:
+def _run_command(
+    manager,
+    target: Path | None,
+    code: str | None,
+    on_stream=None,
+    secrets: dict[str, str] | None = None,
+) -> RunResult:
     if code is not None:
-        return asyncio.run(manager.run_code(code, source_name="inline.py", on_stream=on_stream))
+        return asyncio.run(manager.run_code(code, source_name="inline.py", on_stream=on_stream, secrets=secrets or None))
     assert target is not None
     if target.suffix == ".ipynb":
         return asyncio.run(
@@ -51,9 +77,10 @@ def _run_command(manager, target: Path | None, code: str | None, on_stream=None)
                 target,
                 on_stream=on_stream,
                 on_cell_start=lambda index, total: typer.echo(f"[{index}/{total}] running cell", err=True),
+                secrets=secrets or None,
             )
         )
-    return asyncio.run(manager.run_script(target, on_stream=on_stream))
+    return asyncio.run(manager.run_script(target, on_stream=on_stream, secrets=secrets or None))
 
 
 def _emit_non_stream_outputs(result: RunResult) -> None:
