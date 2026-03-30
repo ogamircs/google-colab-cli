@@ -43,10 +43,12 @@ def build_secrets_setup_code(secrets: dict[str, str]) -> str:
     """Generate Python code that patches google.colab.userdata.get() on the runtime."""
     dict_literal = "{" + ", ".join(f"{k!r}: {v!r}" for k, v in secrets.items()) + "}"
     return (
-        "import types as _types, sys as _sys\n"
+        "import sys as _sys\n"
         f"_secrets = {dict_literal}\n"
-        '_mod = _sys.modules.get("google.colab.userdata")\n'
-        "if _mod is None:\n"
+        "try:\n"
+        "    from google.colab import userdata as _mod\n"
+        "except ImportError:\n"
+        "    import types as _types\n"
         '    _goog = _sys.modules.setdefault("google", _types.ModuleType("google"))\n'
         '    _goog.__path__ = getattr(_goog, "__path__", [])\n'
         '    _colab = _sys.modules.setdefault("google.colab", _types.ModuleType("google.colab"))\n'
@@ -55,10 +57,11 @@ def build_secrets_setup_code(secrets: dict[str, str]) -> str:
         '    _sys.modules["google.colab.userdata"] = _mod\n'
         "    _goog.colab = _colab\n"
         "    _colab.userdata = _mod\n"
+        "    del _types\n"
         "def _get(key, _s=_secrets):\n"
         "    if key not in _s:\n"
         "        raise KeyError(f\"Secret '{key}' not found\")\n"
         "    return _s[key]\n"
         "_mod.get = _get\n"
-        "del _types, _sys, _secrets, _mod, _get\n"
+        "del _sys, _secrets, _mod, _get\n"
     )

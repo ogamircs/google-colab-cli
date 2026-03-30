@@ -297,7 +297,7 @@ class RuntimeManager:
         self, kernel_client: Any, secrets: dict[str, str] | None, started: float
     ) -> RunResult | None:
         """Execute secrets setup cell. Returns RunResult on failure, None on success."""
-        if not secrets:
+        if secrets is None:
             return None
         setup = await kernel_client.execute(
             build_secrets_setup_code(secrets),

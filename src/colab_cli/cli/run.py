@@ -17,8 +17,10 @@ from colab_cli.models import RunResult
 def _collect_secrets(
     secret: list[str] | None,
     secrets_file: Path | None,
-) -> dict[str, str]:
-    """Merge secrets from file and CLI flags. CLI flags win on conflict."""
+) -> dict[str, str] | None:
+    """Merge secrets from file and CLI flags. Returns None if neither was provided."""
+    if secret is None and secrets_file is None:
+        return None
     merged: dict[str, str] = {}
     if secrets_file is not None:
         merged.update(parse_secrets_file(secrets_file))
