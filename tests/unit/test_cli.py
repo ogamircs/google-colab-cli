@@ -28,17 +28,18 @@ class FakeRuntimeManager:
     async def disconnect(self) -> StatusResult:
         return StatusResult(connected=False)
 
-    async def run_code(self, code: str, source_name: str = "inline.py", on_stream=None) -> RunResult:
-        assert code == "print('hi')"
+    async def run_code(self, code: str, source_name: str = "inline.py", on_stream=None, secrets=None) -> RunResult:
+        self.last_secrets = secrets
         return RunResult(
             status="success",
             exit_code=0,
-            stdout="hi\n",
+            stdout="ok\n",
             duration_seconds=0.1,
             cells=[],
         )
 
-    async def run_script(self, path: Path, on_stream=None) -> RunResult:
+    async def run_script(self, path: Path, on_stream=None, secrets=None) -> RunResult:
+        self.last_secrets = secrets
         return RunResult(
             status="success",
             exit_code=0,
@@ -47,7 +48,8 @@ class FakeRuntimeManager:
             cells=[],
         )
 
-    async def run_notebook(self, path: Path, on_stream=None, on_cell_start=None) -> RunResult:
+    async def run_notebook(self, path: Path, on_stream=None, on_cell_start=None, secrets=None) -> RunResult:
+        self.last_secrets = secrets
         return RunResult(
             status="success",
             exit_code=0,
@@ -140,6 +142,46 @@ def test_run_inline_json(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert '"status": "success"' in result.stdout
+
+
+def test_run_with_secret_flag(monkeypatch) -> None:
+    mgr = FakeRuntimeManager()
+    monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: mgr)
+
+    result = runner.invoke(app, ["run", "--code", "x", "--secret", "KEY=val", "--json"])
+
+    assert result.exit_code == 0
+    assert mgr.last_secrets == {"KEY": "val"}
+
+
+def test_run_with_multiple_secrets(monkeypatch) -> None:
+    mgr = FakeRuntimeManager()
+    monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: mgr)
+
+    result = runner.invoke(app, ["run", "--code", "x", "-s", "A=1", "-s", "B=2", "--json"])
+
+    assert result.exit_code == 0
+    assert mgr.last_secrets == {"A": "1", "B": "2"}
+
+
+def test_run_with_secrets_file(monkeypatch, tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("TOKEN=abc123\n")
+    mgr = FakeRuntimeManager()
+    monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: mgr)
+
+    result = runner.invoke(app, ["run", "--code", "x", "--secrets-file", str(env_file), "--json"])
+
+    assert result.exit_code == 0
+    assert mgr.last_secrets == {"TOKEN": "abc123"}
+
+
+def test_run_secret_missing_equals(monkeypatch) -> None:
+    monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: FakeRuntimeManager())
+
+    result = runner.invoke(app, ["run", "--code", "x", "--secret", "NOEQUALS"])
+
+    assert result.exit_code != 0
 
 
 def test_push_pull_and_ls(monkeypatch, tmp_path: Path) -> None:
