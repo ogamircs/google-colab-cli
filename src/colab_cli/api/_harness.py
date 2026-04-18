@@ -10,11 +10,14 @@ from __future__ import annotations
 DONE_MARKER = "__COLAB_CLI_DONE__"
 
 REMOTE_HARNESS_TEMPLATE = r"""
-import os, traceback, pickle
+import os, traceback, pickle, subprocess, sys
 try:
     import cloudpickle as _pickle
 except ImportError:
-    _pickle = pickle
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "-q", "cloudpickle"]
+    )
+    import cloudpickle as _pickle
 
 _SLUG_DIR = {slug_dir!r}
 _FN_PATH  = os.path.join(_SLUG_DIR, "fn.pkl")

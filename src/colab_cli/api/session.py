@@ -169,11 +169,12 @@ def colab(
     owns = False
 
     if st.connected:
-        if require_accelerator_match and gpu:
-            wanted = gpu.upper()
-            if st.accelerator != wanted:
+        if require_accelerator_match:
+            wanted = gpu.upper() if gpu else None
+            actual = st.accelerator or None
+            if wanted != actual:
                 raise ConnectionError(
-                    f"Existing runtime has accelerator={st.accelerator!r} but "
+                    f"Existing runtime has accelerator={actual!r} but "
                     f"{wanted!r} was requested. Disconnect first or pass "
                     "require_accelerator_match=False to attach anyway."
                 )
