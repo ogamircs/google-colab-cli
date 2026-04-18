@@ -20,6 +20,7 @@ dependencies = [
   "google-auth>=2.29.0",
   "google-auth-oauthlib>=1.2.0",
   "rich>=13.7.0",
+  "cloudpickle>=3.0.0",
 ]
 
 [project.optional-dependencies]
