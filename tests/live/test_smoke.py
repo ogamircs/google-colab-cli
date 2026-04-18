@@ -69,3 +69,26 @@ def test_live_connect_run_files_and_disconnect(tmp_path: Path) -> None:
         assert disconnected.connected is False
 
     asyncio.run(run_flow())
+
+
+def test_live_api_roundtrip() -> None:
+    _require_live_setup()
+    from colab_cli import RemoteExecutionError, colab, remote
+
+    with colab(gpu="t4") as c:
+        result = c.run("import torch; print(torch.cuda.is_available())")
+        assert result.status == "success"
+        assert "True" in result.stdout
+
+    @remote(gpu="t4")
+    def add(a: int, b: int) -> int:
+        return a + b
+
+    assert add(3, 4) == 7
+
+    @remote(gpu="t4")
+    def boom() -> None:
+        raise RuntimeError("remote boom")
+
+    with pytest.raises(RemoteExecutionError):
+        boom()

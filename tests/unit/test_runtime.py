@@ -282,6 +282,46 @@ async def test_disconnect_clears_connection(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_disconnect_tolerates_reclaimed_runtime(tmp_path: Path) -> None:
+    """Colab sometimes 404s on unassign when the runtime is already gone.
+    Local cleanup should still proceed so the user is not stuck with a stale
+    active.json."""
+    import httpx
+
+    connection_store = ConnectionStore(home=tmp_path)
+    connection_store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+        )
+    )
+
+    class StaleColabClient(FakeColabClient):
+        async def unassign_runtime(self, **_: object) -> None:
+            request = httpx.Request("GET", "https://colab.research.google.com/tun/m/unassign/x")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("404", request=request, response=response)
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=StaleColabClient,
+        spawn_keepalive=False,
+    )
+
+    status = await manager.disconnect()
+
+    assert status.connected is False
+    assert connection_store.load() is None
+
+
+@pytest.mark.asyncio
 async def test_push_pull_and_ls_use_jupyter_client(tmp_path: Path) -> None:
     connection_store = ConnectionStore(home=tmp_path)
     connection_store.save(
