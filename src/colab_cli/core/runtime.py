@@ -13,6 +13,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from colab_cli.config import load_app_config
 from colab_cli.core.auth.credentials import CredentialManager
 from colab_cli.core.colab.client import ColabClient
@@ -132,6 +134,12 @@ class RuntimeManager:
                 endpoint_id=connection.endpoint_id,
                 authuser=connection.authuser,
             )
+        except httpx.HTTPStatusError as exc:
+            # Runtime already reclaimed / gone on Colab's side — proceed with
+            # local cleanup anyway. Re-raise for anything other than the
+            # expected "not found" / "unauthorized" cases.
+            if exc.response.status_code not in (401, 403, 404):
+                raise
         finally:
             await _maybe_aclose(client)
         self._stop_keepalive_process(connection.keepalive_pid)
