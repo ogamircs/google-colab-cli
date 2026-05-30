@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 
-from colab_cli.models import RunResult, StatusResult
+from colab_cli.models import CellResult, NotebookState, RunResult, StatusResult
 
 
-def format_json(model: RunResult | StatusResult | dict[str, object]) -> str:
+def format_json(
+    model: RunResult | StatusResult | NotebookState | CellResult | dict[str, object],
+) -> str:
     if hasattr(model, "model_dump"):
         return json.dumps(model.model_dump(mode="json"), indent=2)
     return json.dumps(model, indent=2)

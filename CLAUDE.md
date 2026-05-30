@@ -29,10 +29,11 @@ Layered. CLI → `RuntimeManager` → three protocol clients. All async via `htt
 
 ```
 src/colab_cli/
-  cli/              Typer commands — one file per command group (auth, connect, run, files)
+  cli/              Typer commands — one file per command group (auth, connect, run, files, notebook)
   core/
-    runtime.py      RuntimeManager — orchestrates connect/run/push/pull/keepalive. Single entry via create_runtime_manager().
+    runtime.py      RuntimeManager — orchestrates connect/run/push/pull/execute_cell/keepalive. Single entry via create_runtime_manager().
     connection.py   ConnectionStore — persists ActiveConnection to ~/.config/colab-cli/active.json (chmod 0600).
+    notebook.py     NotebookDocument — local .ipynb cell CRUD (create/edit/delete/move/state/output) + write_outputs. Pure stdlib, no nbformat dep.
     secrets.py      Builds Python shim injecting google.colab.userdata.get() on remote.
     auth/           OAuth (desktop flow), token refresh via google-auth, token_store (chmod 0600 token.json).
     colab/client.py ColabClient — Colab's tunnel/proxy API (assign, unassign, keep-alive, runtime-proxy-token).
@@ -98,6 +99,26 @@ All under `~/.config/colab-cli/` (path helpers in `paths.py`):
 - WS ping is disabled (`ping_interval=None`) because the Colab proxy doesn't reliably forward pings — don't re-enable.
 - Rich/binary notebook outputs (images, HTML) are not rendered; only `text/plain` fallback is emitted. `decode_contents_payload` handles base64 binary files for push/pull.
 - Free-tier Colab ~12h limit; runtime may be reclaimed — surface as `ColabRuntimeError` (exit 3) when detected.
+
+## Notebook cell tools (`colab nb`)
+
+Stateful, cell-addressable editing of a **local `.ipynb`**, mirroring the cell toolset that
+`googlecolab/colab-mcp` exposes (create/edit/execute/delete/move cells, get_notebook_state,
+get_cell_output) — but headless, no browser session required.
+
+- `cli/notebook.py` registers the `nb` sub-app. Editing commands (init/state/add/edit/delete/move/output)
+  call `NotebookDocument` directly and need **no runtime or auth** — they work offline. Only
+  `nb run` calls `create_runtime_manager` + `RuntimeManager.execute_cell`.
+- `core/notebook.py::NotebookDocument` is the single source of truth for cell ops; it reads/writes
+  nbformat-v4 JSON with stdlib only (consistent with `formats/notebook.py`).
+- `RuntimeManager.execute_cell(path, index)` routes one code cell's source to the persistent
+  kernel via `_ensure_session` + `KernelWebSocketClient` (state carries across cells like `colab run`),
+  then writes outputs back into the `.ipynb` (`NotebookDocument.write_outputs`).
+- Python API: `ColabSession.notebook(path)` returns a `NotebookHandle` (execution-capable);
+  `from colab_cli import Notebook` gives a session-less handle for offline editing. See `api/notebook.py`.
+- Output write-back fidelity: `CellResult.outputs` are bare MIME dicts, so rich outputs are
+  written back as `display_data` (no `execute_result`/`execution_count` distinction) — consistent
+  with the existing text/plain-only rendering caveat.
 
 ## Python API (`src/colab_cli/api/`)
 

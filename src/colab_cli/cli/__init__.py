@@ -6,7 +6,7 @@ import typer
 
 from colab_cli.errors import AuthError, ColabCliError, ColabRuntimeError, ConnectionError, ExecutionError
 
-from . import connect, files, run
+from . import connect, files, notebook, run
 from .auth import auth_app
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -15,6 +15,7 @@ app.add_typer(auth_app, name="auth")
 connect.register(app)
 run.register(app)
 files.register(app)
+notebook.register(app)
 
 
 def main() -> None:

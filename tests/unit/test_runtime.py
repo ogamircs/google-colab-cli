@@ -465,3 +465,100 @@ def test_create_runtime_manager_can_skip_missing_config_for_status(tmp_path: Pat
     manager = create_runtime_manager(home=tmp_path, spawn_keepalive=False, allow_missing_config=True)
 
     assert manager.status().connected is False
+
+
+def _connected_store(tmp_path: Path) -> ConnectionStore:
+    store = ConnectionStore(home=tmp_path)
+    store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+        )
+    )
+    return store
+
+
+@pytest.mark.asyncio
+async def test_execute_cell_writes_output_back(tmp_path: Path) -> None:
+    from colab_cli.core.notebook import NotebookDocument
+
+    nb = tmp_path / "nb.ipynb"
+    doc = NotebookDocument.create_empty(nb)
+    doc.create_cell("code", "print(1)")
+    doc.create_cell("code", "print(2)")
+    doc.save()
+
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    result = await manager.execute_cell(nb, 1)
+
+    assert result.status == "success"
+    assert kernel_client.calls == ["print(2)"]
+    reloaded = NotebookDocument.load(nb)
+    assert reloaded.state().cells[1].execution_count == 1
+    assert reloaded.get_cell_output(1)
+
+
+@pytest.mark.asyncio
+async def test_execute_cell_rejects_non_code_cell(tmp_path: Path) -> None:
+    from colab_cli.core.notebook import NotebookDocument
+    from colab_cli.errors import ExecutionError
+
+    nb = tmp_path / "nb.ipynb"
+    doc = NotebookDocument.create_empty(nb)
+    doc.create_cell("markdown", "# heading")
+    doc.save()
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: FakeKernelClient(),
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ExecutionError):
+        await manager.execute_cell(nb, 0)
+
+
+@pytest.mark.asyncio
+async def test_execute_cell_reuses_kernel_across_calls(tmp_path: Path) -> None:
+    from colab_cli.core.notebook import NotebookDocument
+
+    nb = tmp_path / "nb.ipynb"
+    doc = NotebookDocument.create_empty(nb)
+    doc.create_cell("code", "print(1)")
+    doc.create_cell("code", "print(2)")
+    doc.save()
+
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    await manager.execute_cell(nb, 0)
+    await manager.execute_cell(nb, 1)
+
+    assert kernel_client.calls == ["print(1)", "print(2)"]

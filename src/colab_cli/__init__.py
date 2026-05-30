@@ -8,7 +8,14 @@ __version__ = "0.1.0"
 def __getattr__(name: str):
     # Lazy re-exports so importing colab_cli does not pull in cloudpickle /
     # runtime code paths unless the Python API is actually used.
-    if name in {"colab", "remote", "ColabSession", "RemoteExecutionError"}:
+    if name in {
+        "colab",
+        "remote",
+        "ColabSession",
+        "RemoteExecutionError",
+        "Notebook",
+        "NotebookHandle",
+    }:
         from . import api
 
         return getattr(api, name)
@@ -17,6 +24,8 @@ def __getattr__(name: str):
 
 __all__ = [
     "ColabSession",
+    "Notebook",
+    "NotebookHandle",
     "RemoteExecutionError",
     "__version__",
     "colab",
