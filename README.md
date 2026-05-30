@@ -18,6 +18,10 @@ colab run notebook.ipynb                 # Execute all notebook cells
 colab push data.csv /content/data.csv    # Upload to runtime
 colab pull /content/results.csv .        # Download from runtime
 
+# Notebook cells (edit locally, run on the runtime)
+colab nb add notebook.ipynb -s "x = 1"   # Build a notebook cell by cell
+colab nb run notebook.ipynb 0            # Execute one cell on the persistent kernel
+
 # Done
 colab disconnect                         # Release runtime
 ```
@@ -121,6 +125,30 @@ colab ls [/content] [--json]             # List files on runtime
 ```
 
 Binary files are handled automatically (base64 encoding).
+
+### Notebook Cells
+
+Build and iterate on a notebook one cell at a time. The editing commands operate on a
+**local `.ipynb`** and work entirely offline (no runtime or auth needed); `colab nb run`
+executes a single cell on the connected runtime's persistent kernel — so variables persist
+across cells — and writes the outputs back into the file.
+
+```bash
+colab nb init notebook.ipynb                       # Create an empty .ipynb
+colab nb add notebook.ipynb -s "x = 21"            # Append a code cell (prints its index)
+colab nb add notebook.ipynb --type markdown -s "# Notes"   # Add a markdown cell
+colab nb add notebook.ipynb --index 0 -s "import torch"    # Insert at a position
+colab nb add notebook.ipynb --from-file cell.py            # Read source from a file
+colab nb state notebook.ipynb [--json]             # List cells (type, exec count, outputs)
+colab nb edit notebook.ipynb 0 -s "x = 99"         # Replace a cell's source
+colab nb move notebook.ipynb 2 0                   # Reorder cells
+colab nb delete notebook.ipynb 1                   # Remove a cell
+colab nb run notebook.ipynb 0 [--json] [--secret K=V]      # Execute one cell on the runtime
+colab nb output notebook.ipynb 0 [--json]          # Show a cell's stored outputs
+```
+
+`-s` is mutually exclusive with `--from-file`; if neither is given, `add`/`edit` read the cell
+source from stdin. Cell source can be code or markdown (`--type`, default `code`).
 
 ## Agent Usage (Claude Code / Codex)
 

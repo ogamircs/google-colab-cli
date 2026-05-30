@@ -21,7 +21,8 @@ from colab_cli.core.colab.client import ColabClient
 from colab_cli.core.connection import ConnectionStore
 from colab_cli.core.jupyter.rest import JupyterRestClient
 from colab_cli.core.jupyter.ws import KernelWebSocketClient
-from colab_cli.errors import ConfigError, ConnectionError
+from colab_cli.errors import ConfigError, ConnectionError, ExecutionError
+from colab_cli.core.notebook import NotebookDocument
 from colab_cli.core.secrets import build_secrets_setup_code
 from colab_cli.formats.notebook import extract_code_cells
 from colab_cli.models import (
@@ -230,6 +231,57 @@ class RuntimeManager:
             duration_seconds=time.monotonic() - started,
             cells=results,
         )
+
+    async def execute_cell(
+        self,
+        path: Path,
+        index: int,
+        *,
+        allow_stdin: bool = False,
+        on_stream: Callable[[str, str], Any] | None = None,
+        secrets: dict[str, str] | None = None,
+        write_back: bool = True,
+    ) -> CellResult:
+        """Execute a single code cell of a local notebook on the runtime kernel.
+
+        Reuses the persistent session/kernel (so state carries across cells, like
+        ``colab run``). When ``write_back`` is True the cell's outputs and
+        execution_count are written back into the ``.ipynb`` on disk.
+        """
+        started = time.monotonic()
+        path = Path(path)
+        doc = NotebookDocument.load(path)
+        cell = doc.get_cell(index)
+        if cell.get("cell_type") != "code":
+            raise ExecutionError(
+                f"Cell {index} is a {cell.get('cell_type', 'unknown')} cell; "
+                "only code cells can be executed."
+            )
+        source = doc.source_of(index)
+        connection = await self._ensure_session(source_name=path.name)
+        kernel_client = self._make_kernel_client(connection)
+        error = await self._inject_secrets(kernel_client, secrets, started)
+        if error is not None:
+            setup = error.cells[0] if error.cells else None
+            return CellResult(
+                index=index,
+                source=source,
+                status="error",
+                stdout=setup.stdout if setup else error.stdout,
+                stderr=setup.stderr if setup else error.stderr,
+                error=setup.error if setup else error.error,
+                traceback=setup.traceback if setup else error.traceback,
+            )
+        result = await kernel_client.execute(
+            source,
+            cell_index=index,
+            allow_stdin=allow_stdin,
+            on_stream=on_stream,
+        )
+        if write_back:
+            doc.write_outputs(index, result)
+            doc.save()
+        return result
 
     async def push_file(self, local_path: Path, remote_path: str) -> None:
         connection = await self._ensure_connection()

@@ -97,6 +97,22 @@ class RunResult(StrictModel):
     cells: list[CellResult] = Field(default_factory=list)
 
 
+class NotebookCellInfo(StrictModel):
+    index: int
+    id: str | None = None
+    cell_type: str
+    source: str = ""
+    execution_count: int | None = None
+    output_count: int = 0
+    has_error: bool = False
+
+
+class NotebookState(StrictModel):
+    path: str
+    cell_count: int
+    cells: list[NotebookCellInfo] = Field(default_factory=list)
+
+
 class AssignHandshake(BaseModel):
     """GET /tun/m/assign response — allow extra fields from Colab API."""
     token: str = Field(min_length=1)

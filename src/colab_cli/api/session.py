@@ -19,6 +19,8 @@ from ._sync import SyncRunner, get_runner
 if TYPE_CHECKING:
     from collections.abc import Callable as _Callable  # noqa: F401
 
+    from .notebook import NotebookHandle
+
 
 class ColabSession:
     """Synchronous handle to an active Colab runtime.
@@ -121,6 +123,14 @@ class ColabSession:
 
     def ls(self, remote: str = "") -> list[JupyterContent]:
         return self._runner.run(self._manager.list_files(remote))
+
+    # -------------------------------------------------------------- notebook
+
+    def notebook(self, path: str | Path) -> "NotebookHandle":
+        """Return a :class:`NotebookHandle` bound to this session for cell execution."""
+        from .notebook import NotebookHandle
+
+        return NotebookHandle(path, session=self, runner=self._runner)
 
 
 def colab(
