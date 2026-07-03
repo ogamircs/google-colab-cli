@@ -30,8 +30,8 @@ class NotebookHandle:
         self,
         path: str | Path,
         *,
-        session: "ColabSession | None" = None,
-        runner: "SyncRunner | None" = None,
+        session: ColabSession | None = None,
+        runner: SyncRunner | None = None,
     ) -> None:
         self._path = Path(path)
         self._session = session

@@ -27,8 +27,8 @@ def _collect_secrets(
     for item in secret or []:
         try:
             key, value = parse_key_value(item)
-        except ConfigError:
-            raise typer.BadParameter(f"Invalid secret format: {item!r} — expected KEY=VALUE")
+        except ConfigError as exc:
+            raise typer.BadParameter(f"Invalid secret format: {item!r} — expected KEY=VALUE") from exc
         merged[key] = value
     return merged
 

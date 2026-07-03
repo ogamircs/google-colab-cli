@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 
-from colab_cli.models import CellResult, NotebookState, RunResult, StatusResult
+from pydantic import BaseModel
+
+from colab_cli.models import RunResult, StatusResult
 
 
-def format_json(
-    model: RunResult | StatusResult | NotebookState | CellResult | dict[str, object],
-) -> str:
-    if hasattr(model, "model_dump"):
+def format_json(model: BaseModel | dict[str, object]) -> str:
+    if isinstance(model, BaseModel):
         return json.dumps(model.model_dump(mode="json"), indent=2)
     return json.dumps(model, indent=2)
 

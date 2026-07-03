@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -33,7 +33,7 @@ class ColabClient:
         url: str,
         *,
         runtime_scoped: bool = False,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Issue a request, mapping failures onto the colab-cli exception hierarchy.
 

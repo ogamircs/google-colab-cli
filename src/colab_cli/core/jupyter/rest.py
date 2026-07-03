@@ -9,10 +9,9 @@ from typing import Any
 
 import httpx
 
+from colab_cli.core.colab.headers import build_colab_headers
 from colab_cli.errors import AuthError, ColabRuntimeError, ConnectionError, ExecutionError
 from colab_cli.models import JupyterContent, JupyterSession
-
-from colab_cli.core.colab.headers import build_colab_headers
 
 
 def encode_contents_payload(data: bytes) -> dict[str, str]:
@@ -67,7 +66,7 @@ class JupyterRestClient:
         url: str,
         *,
         not_found: str | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> httpx.Response:
         """Issue a request, mapping failures onto the colab-cli exception hierarchy.
 

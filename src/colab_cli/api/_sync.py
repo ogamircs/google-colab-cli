@@ -13,8 +13,8 @@ import atexit
 import concurrent.futures
 import os
 import threading
-from collections.abc import Awaitable
-from typing import TypeVar
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -43,7 +43,7 @@ class SyncRunner:
             except Exception:
                 pass
 
-    def run(self, coro: Awaitable[T], *, timeout: float | None = None) -> T:
+    def run(self, coro: Coroutine[Any, Any, T], *, timeout: float | None = None) -> T:
         if self._closed:
             raise RuntimeError("SyncRunner is closed")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)

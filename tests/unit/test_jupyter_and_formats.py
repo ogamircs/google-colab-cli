@@ -4,9 +4,8 @@ import base64
 import json
 from pathlib import Path
 
-import pytest
-
 import httpx
+import pytest
 
 from colab_cli.core.jupyter.rest import JupyterRestClient, decode_contents_payload, encode_contents_payload
 from colab_cli.core.jupyter.ws import KernelMessageAccumulator, KernelWebSocketClient
@@ -16,7 +15,7 @@ from colab_cli.models import JupyterContent
 
 
 def test_encode_contents_payload_uses_text_for_utf8() -> None:
-    payload = encode_contents_payload("hello world".encode("utf-8"))
+    payload = encode_contents_payload(b"hello world")
 
     assert payload["format"] == "text"
     assert payload["content"] == "hello world"

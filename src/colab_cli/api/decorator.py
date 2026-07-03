@@ -20,7 +20,8 @@ import cloudpickle
 from colab_cli.errors import ColabCliError, RemoteExecutionError
 
 from ._harness import DONE_MARKER, render_harness
-from .session import ColabSession, colab as _colab
+from .session import ColabSession
+from .session import colab as _colab
 
 F = TypeVar("F", bound=Callable[..., Any])
 

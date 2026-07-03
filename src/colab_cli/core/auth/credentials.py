@@ -65,6 +65,8 @@ def refresh_token(config: AppConfig, token: TokenData) -> TokenData:
         scopes=list(config.oauth.scopes),
     )
     credentials.refresh(Request())
+    if not credentials.token:
+        raise AuthError("Token refresh did not return an access token.")
     return TokenData(
         access_token=credentials.token,
         refresh_token=credentials.refresh_token or token.refresh_token,

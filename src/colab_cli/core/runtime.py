@@ -20,14 +20,15 @@ from colab_cli.core.colab.client import ColabClient
 from colab_cli.core.connection import ConnectionStore
 from colab_cli.core.jupyter.rest import JupyterRestClient
 from colab_cli.core.jupyter.ws import KernelWebSocketClient
-from colab_cli.errors import AuthError, ColabRuntimeError, ConfigError, ConnectionError, ExecutionError
 from colab_cli.core.notebook import NotebookDocument
 from colab_cli.core.secrets import build_secrets_setup_code
+from colab_cli.errors import AuthError, ColabRuntimeError, ConfigError, ConnectionError, ExecutionError
 from colab_cli.formats.notebook import extract_code_cells
 from colab_cli.models import (
     ActiveConnection,
     AppConfig,
     CellResult,
+    OAuthConfig,
     RunResult,
     StatusResult,
 )
@@ -470,10 +471,10 @@ def create_runtime_manager(
         if not allow_missing_config:
             raise
         config = AppConfig(
-            oauth={
-                "client_id": "placeholder.apps.googleusercontent.com",
-                "client_secret": "placeholder",
-            }
+            oauth=OAuthConfig(
+                client_id="placeholder.apps.googleusercontent.com",
+                client_secret="placeholder",
+            )
         )
     credentials = CredentialManager(config=config, home=home)
     connection_store = ConnectionStore(home=home)

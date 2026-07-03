@@ -65,11 +65,11 @@ class NotebookDocument:
         self.data.setdefault("cells", [])
 
     @classmethod
-    def create_empty(cls, path: Path | str) -> "NotebookDocument":
+    def create_empty(cls, path: Path | str) -> NotebookDocument:
         return cls(path, {"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
 
     @classmethod
-    def load(cls, path: Path | str) -> "NotebookDocument":
+    def load(cls, path: Path | str) -> NotebookDocument:
         p = Path(path)
         if not p.exists():
             raise ColabCliError(f"Notebook not found: {p}")
@@ -82,7 +82,7 @@ class NotebookDocument:
         return cls(p, data)
 
     @classmethod
-    def load_or_create(cls, path: Path | str) -> "NotebookDocument":
+    def load_or_create(cls, path: Path | str) -> NotebookDocument:
         p = Path(path)
         return cls.load(p) if p.exists() else cls.create_empty(p)
 

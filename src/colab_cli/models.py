@@ -15,8 +15,8 @@ class StrictModel(BaseModel):
 class OAuthConfig(StrictModel):
     client_id: str = Field(min_length=1)
     client_secret: str = Field(min_length=1)
-    auth_uri: HttpUrl = Field(default="https://accounts.google.com/o/oauth2/auth")
-    token_uri: HttpUrl = Field(default="https://oauth2.googleapis.com/token")
+    auth_uri: HttpUrl = Field(default=HttpUrl("https://accounts.google.com/o/oauth2/auth"))
+    token_uri: HttpUrl = Field(default=HttpUrl("https://oauth2.googleapis.com/token"))
     scopes: tuple[str, ...] = (
         "openid",
         "email",
@@ -60,7 +60,7 @@ class ActiveConnection(StrictModel):
     kernel_id: str | None = None
 
     @model_validator(mode="after")
-    def validate_proxy_state(self) -> "ActiveConnection":
+    def validate_proxy_state(self) -> ActiveConnection:
         if not self.proxy_expires_at:
             raise ValueError("proxy_expires_at is required")
         return self

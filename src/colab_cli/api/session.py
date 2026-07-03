@@ -65,7 +65,7 @@ class ColabSession:
 
     # ---------------------------------------------------------------- lifecyc
 
-    def __enter__(self) -> "ColabSession":
+    def __enter__(self) -> ColabSession:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
@@ -128,7 +128,7 @@ class ColabSession:
 
     # -------------------------------------------------------------- notebook
 
-    def notebook(self, path: str | Path) -> "NotebookHandle":
+    def notebook(self, path: str | Path) -> NotebookHandle:
         """Return a :class:`NotebookHandle` bound to this session for cell execution."""
         from .notebook import NotebookHandle
 

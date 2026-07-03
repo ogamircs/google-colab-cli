@@ -6,7 +6,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
@@ -62,7 +62,9 @@ class KernelMessageAccumulator:
             raise ExecutionError("Remote code requested stdin input in non-interactive mode.")
 
     def to_cell_result(self, *, index: int, source: str) -> CellResult:
-        status = "error" if self.error or self.reply_status == "error" else "success"
+        status: Literal["success", "error"] = (
+            "error" if self.error or self.reply_status == "error" else "success"
+        )
         return CellResult(
             index=index,
             source=source,
