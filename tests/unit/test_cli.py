@@ -147,6 +147,30 @@ def test_run_inline_json(monkeypatch) -> None:
     assert '"status": "success"' in result.stdout
 
 
+def test_main_exits_with_mapped_code_for_connection_error(monkeypatch) -> None:
+    """main() must translate mapped errors into process exit codes (exit 2 for
+    ConnectionError), not leak a traceback — typer.Exit raised outside app()
+    is handled by nothing."""
+    import sys
+
+    import pytest
+
+    from colab_cli.cli import main
+    from colab_cli.errors import ConnectionError as CliConnectionError
+
+    class NoRuntimeManager(FakeRuntimeManager):
+        async def run_code(self, *args, **kwargs) -> RunResult:
+            raise CliConnectionError("No active Colab runtime. Run `colab connect` first.")
+
+    monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: NoRuntimeManager())
+    monkeypatch.setattr(sys, "argv", ["colab", "run", "--code", "print(1)"])
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 2
+
+
 def test_run_with_timeout_flag(monkeypatch) -> None:
     mgr = FakeRuntimeManager()
     monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: mgr)
