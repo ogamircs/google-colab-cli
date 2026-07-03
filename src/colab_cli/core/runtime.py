@@ -8,12 +8,11 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 from colab_cli.config import load_app_config
 from colab_cli.core.auth.credentials import CredentialManager
@@ -21,14 +20,15 @@ from colab_cli.core.colab.client import ColabClient
 from colab_cli.core.connection import ConnectionStore
 from colab_cli.core.jupyter.rest import JupyterRestClient
 from colab_cli.core.jupyter.ws import KernelWebSocketClient
-from colab_cli.errors import ConfigError, ConnectionError, ExecutionError
 from colab_cli.core.notebook import NotebookDocument
 from colab_cli.core.secrets import build_secrets_setup_code
+from colab_cli.errors import AuthError, ColabRuntimeError, ConfigError, ConnectionError, ExecutionError
 from colab_cli.formats.notebook import extract_code_cells
 from colab_cli.models import (
     ActiveConnection,
     AppConfig,
     CellResult,
+    OAuthConfig,
     RunResult,
     StatusResult,
 )
@@ -114,6 +114,9 @@ class RuntimeManager:
         connection = self.connection_store.load()
         if connection is None:
             return StatusResult(connected=False)
+        keepalive_running = None
+        if connection.keepalive_pid is not None:
+            keepalive_running = _is_keepalive_process(connection.keepalive_pid)
         return StatusResult(
             connected=True,
             endpoint=connection.endpoint_id,
@@ -121,6 +124,7 @@ class RuntimeManager:
             proxy_expires_at=connection.proxy_expires_at,
             last_keepalive_at=connection.last_keepalive_at,
             notebook_hash=connection.notebook_hash,
+            keepalive_running=keepalive_running,
         )
 
     async def disconnect(self) -> StatusResult:
@@ -135,12 +139,10 @@ class RuntimeManager:
                 endpoint_id=connection.endpoint_id,
                 authuser=connection.authuser,
             )
-        except httpx.HTTPStatusError as exc:
+        except (AuthError, ColabRuntimeError):
             # Runtime already reclaimed / gone on Colab's side — proceed with
-            # local cleanup anyway. Re-raise for anything other than the
-            # expected "not found" / "unauthorized" cases.
-            if exc.response.status_code not in (401, 403, 404):
-                raise
+            # local cleanup anyway so the user isn't stuck with stale state.
+            pass
         finally:
             await _maybe_aclose(client)
         self._stop_keepalive_process(connection.keepalive_pid)
@@ -155,11 +157,12 @@ class RuntimeManager:
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
         secrets: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=source_name)
         kernel_client = self._make_kernel_client(connection)
-        error = await self._inject_secrets(kernel_client, secrets, started)
+        error = await self._inject_secrets(kernel_client, secrets, started, timeout=timeout)
         if error:
             return error
         cell = await kernel_client.execute(
@@ -167,6 +170,7 @@ class RuntimeManager:
             cell_index=0,
             allow_stdin=allow_stdin,
             on_stream=on_stream,
+            timeout_seconds=timeout,
         )
         return _cell_to_run_result(cell, duration_seconds=time.monotonic() - started)
 
@@ -177,6 +181,7 @@ class RuntimeManager:
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
         secrets: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> RunResult:
         return await self.run_code(
             path.read_text(),
@@ -184,6 +189,7 @@ class RuntimeManager:
             allow_stdin=allow_stdin,
             on_stream=on_stream,
             secrets=secrets,
+            timeout=timeout,
         )
 
     async def run_notebook(
@@ -194,11 +200,12 @@ class RuntimeManager:
         on_stream: Callable[[str, str], Any] | None = None,
         on_cell_start: Callable[[int, int], Any] | None = None,
         secrets: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=path.name)
         kernel_client = self._make_kernel_client(connection)
-        error = await self._inject_secrets(kernel_client, secrets, started)
+        error = await self._inject_secrets(kernel_client, secrets, started, timeout=timeout)
         if error:
             return error
         cells = extract_code_cells(path)
@@ -213,6 +220,7 @@ class RuntimeManager:
                 cell_index=index,
                 allow_stdin=allow_stdin,
                 on_stream=on_stream,
+                timeout_seconds=timeout,
             )
             results.append(cell_result)
             if cell_result.status == "error":
@@ -241,6 +249,7 @@ class RuntimeManager:
         on_stream: Callable[[str, str], Any] | None = None,
         secrets: dict[str, str] | None = None,
         write_back: bool = True,
+        timeout: float | None = None,
     ) -> CellResult:
         """Execute a single code cell of a local notebook on the runtime kernel.
 
@@ -260,7 +269,7 @@ class RuntimeManager:
         source = doc.source_of(index)
         connection = await self._ensure_session(source_name=path.name)
         kernel_client = self._make_kernel_client(connection)
-        error = await self._inject_secrets(kernel_client, secrets, started)
+        error = await self._inject_secrets(kernel_client, secrets, started, timeout=timeout)
         if error is not None:
             setup = error.cells[0] if error.cells else None
             return CellResult(
@@ -277,6 +286,7 @@ class RuntimeManager:
             cell_index=index,
             allow_stdin=allow_stdin,
             on_stream=on_stream,
+            timeout_seconds=timeout,
         )
         if write_back:
             doc.write_outputs(index, result)
@@ -285,38 +295,18 @@ class RuntimeManager:
 
     async def push_file(self, local_path: Path, remote_path: str) -> None:
         connection = await self._ensure_connection()
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        await client.upload_file(local_path, remote_path)
-        await _maybe_aclose(client)
+        async with self._jupyter_client(connection) as client:
+            await client.upload_file(local_path, remote_path)
 
     async def pull_file(self, remote_path: str, local_path: Path) -> Path:
         connection = await self._ensure_connection()
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        result = await client.download_file(remote_path, local_path)
-        await _maybe_aclose(client)
-        return result
+        async with self._jupyter_client(connection) as client:
+            return await client.download_file(remote_path, local_path)
 
     async def list_files(self, remote_path: str = "") -> list[Any]:
         connection = await self._ensure_connection()
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        items = await client.list_directory(remote_path)
-        await _maybe_aclose(client)
-        return items
+        async with self._jupyter_client(connection) as client:
+            return await client.list_directory(remote_path)
 
     async def keepalive_once(self) -> StatusResult:
         connection = self.connection_store.load()
@@ -324,6 +314,7 @@ class RuntimeManager:
             return StatusResult(connected=False)
         token = self.credentials.get_valid_token()
         client = self._colab_client_factory()
+        fields: dict[str, Any] = {}
         try:
             await client.keep_alive(
                 access_token=token.access_token,
@@ -335,14 +326,29 @@ class RuntimeManager:
                     access_token=token.access_token,
                     endpoint_id=connection.endpoint_id,
                 )
-                connection.proxy_url = proxy.url
-                connection.proxy_token = proxy.token
-                connection.proxy_expires_at = ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl))
-            connection.last_keepalive_at = utc_now()
-            self.connection_store.save(connection)
+                fields.update(
+                    proxy_url=proxy.url,
+                    proxy_token=proxy.token,
+                    proxy_expires_at=ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl)),
+                )
+            fields["last_keepalive_at"] = utc_now()
+            self._persist_fields(connection, **fields)
         finally:
             await _maybe_aclose(client)
         return self.status()
+
+    @asynccontextmanager
+    async def _jupyter_client(self, connection: ActiveConnection) -> AsyncIterator[Any]:
+        token = self.credentials.get_valid_token()
+        client = self._jupyter_rest_factory(
+            base_url=connection.proxy_url,
+            access_token=token.access_token,
+            proxy_token=connection.proxy_token,
+        )
+        try:
+            yield client
+        finally:
+            await _maybe_aclose(client)
 
     def _make_kernel_client(self, connection: ActiveConnection) -> Any:
         token = self.credentials.get_valid_token()
@@ -354,7 +360,12 @@ class RuntimeManager:
         )
 
     async def _inject_secrets(
-        self, kernel_client: Any, secrets: dict[str, str] | None, started: float
+        self,
+        kernel_client: Any,
+        secrets: dict[str, str] | None,
+        started: float,
+        *,
+        timeout: float | None = None,
     ) -> RunResult | None:
         """Execute secrets setup cell. Returns RunResult on failure, None on success."""
         if secrets is None:
@@ -363,6 +374,7 @@ class RuntimeManager:
             build_secrets_setup_code(secrets),
             cell_index=0,
             allow_stdin=False,
+            timeout_seconds=timeout,
         )
         if setup.status == "error":
             return _cell_to_run_result(setup, duration_seconds=time.monotonic() - started)
@@ -382,10 +394,12 @@ class RuntimeManager:
                 )
             finally:
                 await _maybe_aclose(client)
-            connection.proxy_url = proxy.url
-            connection.proxy_token = proxy.token
-            connection.proxy_expires_at = ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl))
-            self.connection_store.save(connection)
+            connection = self._persist_fields(
+                connection,
+                proxy_url=proxy.url,
+                proxy_token=proxy.token,
+                proxy_expires_at=ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl)),
+            )
         return connection
 
     async def _ensure_session(self, *, source_name: str) -> ActiveConnection:
@@ -393,22 +407,33 @@ class RuntimeManager:
         if connection.session_id and connection.kernel_id:
             return connection
 
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
+        async with self._jupyter_client(connection) as client:
+            session = await client.create_session(
+                path=f"/content/{source_name}",
+                name=source_name,
+                session_type="notebook",
+            )
+        return self._persist_fields(
+            connection,
+            session_id=session.id,
+            kernel_id=session.kernel.id,
         )
-        session = await client.create_session(
-            path=f"/content/{source_name}",
-            name=source_name,
-            session_type="notebook",
-        )
-        await _maybe_aclose(client)
-        connection.session_id = session.id
-        connection.kernel_id = session.kernel.id
-        self.connection_store.save(connection)
-        return connection
+
+    def _persist_fields(self, connection: ActiveConnection, **fields: Any) -> ActiveConnection:
+        """Merge fields into the in-memory connection and the on-disk state.
+
+        Persists via ConnectionStore.update so a concurrent writer's fields
+        (keepalive heartbeat vs session ids) are never clobbered.
+        """
+        for key, value in fields.items():
+            setattr(connection, key, value)
+
+        def _apply(conn: ActiveConnection) -> ActiveConnection:
+            for key, value in fields.items():
+                setattr(conn, key, value)
+            return conn
+
+        return self.connection_store.update(_apply) or connection
 
     def _spawn_keepalive_process(self) -> int | None:
         try:
@@ -430,6 +455,10 @@ class RuntimeManager:
     def _stop_keepalive_process(self, pid: int | None) -> None:
         if pid is None:
             return
+        if not _is_keepalive_process(pid):
+            # The PID may have been reused by an unrelated process (e.g. after
+            # a reboot) — never signal something we didn't spawn.
+            return
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
@@ -448,10 +477,10 @@ def create_runtime_manager(
         if not allow_missing_config:
             raise
         config = AppConfig(
-            oauth={
-                "client_id": "placeholder.apps.googleusercontent.com",
-                "client_secret": "placeholder",
-            }
+            oauth=OAuthConfig(
+                client_id="placeholder.apps.googleusercontent.com",
+                client_secret="placeholder",
+            )
         )
     credentials = CredentialManager(config=config, home=home)
     connection_store = ConnectionStore(home=home)
@@ -461,6 +490,29 @@ def create_runtime_manager(
         connection_store=connection_store,
         spawn_keepalive=spawn_keepalive,
     )
+
+
+_KEEPALIVE_COMMAND_MARKER = "_internal_keepalive"
+
+
+def _process_command(pid: int) -> str | None:
+    """Return the command line of a running process, or None if it is gone."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    command = result.stdout.strip()
+    return command or None
+
+
+def _is_keepalive_process(pid: int) -> bool:
+    command = _process_command(pid)
+    return command is not None and _KEEPALIVE_COMMAND_MARKER in command
 
 
 def _parse_ttl_seconds(token_ttl: str | None) -> int:

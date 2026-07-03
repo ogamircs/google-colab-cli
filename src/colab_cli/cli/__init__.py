@@ -19,20 +19,23 @@ notebook.register(app)
 
 
 def main() -> None:
+    # typer.Exit only works inside app(); out here it would escape as an
+    # unhandled exception (traceback + exit 1). Use SystemExit so the mapped
+    # exit codes actually reach the shell.
     try:
         app()
     except ExecutionError as exc:
         typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
+        raise SystemExit(1) from exc
     except (AuthError, ConnectionError) as exc:
         typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from exc
+        raise SystemExit(2) from exc
     except ColabRuntimeError as exc:
         typer.echo(str(exc), err=True)
-        raise typer.Exit(code=3) from exc
+        raise SystemExit(3) from exc
     except ColabCliError as exc:
         typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

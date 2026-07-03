@@ -27,8 +27,8 @@ def _collect_secrets(
     for item in secret or []:
         try:
             key, value = parse_key_value(item)
-        except ConfigError:
-            raise typer.BadParameter(f"Invalid secret format: {item!r} — expected KEY=VALUE")
+        except ConfigError as exc:
+            raise typer.BadParameter(f"Invalid secret format: {item!r} — expected KEY=VALUE") from exc
         merged[key] = value
     return merged
 
@@ -40,6 +40,7 @@ def register(app: typer.Typer) -> None:
         code: str | None = typer.Option(None, "--code", "-c", help="Inline Python code to execute."),
         secret: list[str] | None = typer.Option(None, "--secret", "-s", help="Secret as KEY=VALUE (repeatable)."),
         secrets_file: Path | None = typer.Option(None, "--secrets-file", exists=True, readable=True, resolve_path=True, help="Path to file with KEY=VALUE secrets."),
+        timeout: float | None = typer.Option(None, "--timeout", min=0.0, help="Idle timeout in seconds: fail if the kernel is silent this long. Default: wait indefinitely."),
         as_json: bool = typer.Option(False, "--json", help="Emit JSON output."),
     ) -> None:
         if bool(target) == bool(code):
@@ -48,7 +49,7 @@ def register(app: typer.Typer) -> None:
         secrets = _collect_secrets(secret, secrets_file)
         manager = create_runtime_manager(spawn_keepalive=False)
         if as_json:
-            result = _run_command(manager, target, code, secrets=secrets)
+            result = _run_command(manager, target, code, secrets=secrets, timeout=timeout)
             typer.echo(format_json(result))
             if result.exit_code:
                 raise typer.Exit(code=result.exit_code)
@@ -57,7 +58,7 @@ def register(app: typer.Typer) -> None:
         def on_stream(channel: str, text: str) -> None:
             typer.echo(text, nl=False, err=channel == "stderr")
 
-        result = _run_command(manager, target, code, on_stream=on_stream, secrets=secrets)
+        result = _run_command(manager, target, code, on_stream=on_stream, secrets=secrets, timeout=timeout)
         _emit_non_stream_outputs(result)
         if result.traceback:
             typer.echo("\n".join(result.traceback), err=True)
@@ -71,9 +72,10 @@ def _run_command(
     code: str | None,
     on_stream=None,
     secrets: dict[str, str] | None = None,
+    timeout: float | None = None,
 ) -> RunResult:
     if code is not None:
-        return asyncio.run(manager.run_code(code, source_name="inline.py", on_stream=on_stream, secrets=secrets))
+        return asyncio.run(manager.run_code(code, source_name="inline.py", on_stream=on_stream, secrets=secrets, timeout=timeout))
     assert target is not None
     if target.suffix == ".ipynb":
         return asyncio.run(
@@ -82,9 +84,10 @@ def _run_command(
                 on_stream=on_stream,
                 on_cell_start=lambda index, total: typer.echo(f"[{index}/{total}] running cell", err=True),
                 secrets=secrets,
+                timeout=timeout,
             )
         )
-    return asyncio.run(manager.run_script(target, on_stream=on_stream, secrets=secrets))
+    return asyncio.run(manager.run_script(target, on_stream=on_stream, secrets=secrets, timeout=timeout))
 
 
 def _emit_non_stream_outputs(result: RunResult) -> None:

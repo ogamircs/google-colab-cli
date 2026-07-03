@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from colab_cli.core.colab.client import ColabClient
+from colab_cli.errors import AuthError, ColabRuntimeError, ConnectionError
 
 
 @pytest.mark.asyncio
@@ -100,3 +101,56 @@ async def test_keep_alive_and_unassign_use_tunnel_headers() -> None:
 
     assert requests[0].headers["X-Colab-Tunnel"] == "Google"
     assert requests[2].headers["X-Goog-Colab-Token"] == "disconnect-xsrf"
+
+
+def _client_returning(status_code: int) -> ColabClient:
+    return ColabClient(
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(status_code))
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_keep_alive_maps_404_to_runtime_error() -> None:
+    client = _client_returning(404)
+    try:
+        with pytest.raises(ColabRuntimeError):
+            await client.keep_alive(access_token="t", endpoint_id="endpoint-123")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fetch_runtime_proxy_token_maps_401_to_auth_error() -> None:
+    client = _client_returning(401)
+    try:
+        with pytest.raises(AuthError):
+            await client.fetch_runtime_proxy_token(access_token="t", endpoint_id="endpoint-123")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_assign_runtime_maps_server_error_to_connection_error() -> None:
+    client = _client_returning(500)
+    try:
+        with pytest.raises(ConnectionError):
+            await client.assign_runtime(access_token="t", notebook_hash="hash")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_assign_runtime_maps_transport_error_to_connection_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unreachable", request=request)
+
+    client = ColabClient(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(ConnectionError):
+            await client.assign_runtime(access_token="t", notebook_hash="hash")
+    finally:
+        await client.aclose()

@@ -99,9 +99,11 @@ class FakeJupyterRestClient:
 class FakeKernelClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.timeouts: list[float | None] = []
 
-    async def execute(self, code: str, *, cell_index: int = 0, allow_stdin: bool = False, on_stream=None, timeout_seconds: float = 300.0) -> CellResult:
+    async def execute(self, code: str, *, cell_index: int = 0, allow_stdin: bool = False, on_stream=None, timeout_seconds: float | None = None) -> CellResult:
         self.calls.append(code)
+        self.timeouts.append(timeout_seconds)
         if code.strip().startswith("raise"):
             return CellResult(
                 index=cell_index,
@@ -283,29 +285,16 @@ async def test_disconnect_clears_connection(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_disconnect_tolerates_reclaimed_runtime(tmp_path: Path) -> None:
-    """Colab sometimes 404s on unassign when the runtime is already gone.
-    Local cleanup should still proceed so the user is not stuck with a stale
-    active.json."""
-    import httpx
+    """Colab reports the runtime as gone on unassign when it was already
+    reclaimed. Local cleanup should still proceed so the user is not stuck
+    with a stale active.json."""
+    from colab_cli.errors import ColabRuntimeError
 
-    connection_store = ConnectionStore(home=tmp_path)
-    connection_store.save(
-        ActiveConnection(
-            notebook_hash="hash",
-            endpoint_id="endpoint-123",
-            proxy_url="https://proxy.example.com",
-            proxy_token="proxy-token",
-            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
-            accelerator="T4",
-            authuser=0,
-        )
-    )
+    connection_store = _connected_store(tmp_path)
 
     class StaleColabClient(FakeColabClient):
         async def unassign_runtime(self, **_: object) -> None:
-            request = httpx.Request("GET", "https://colab.research.google.com/tun/m/unassign/x")
-            response = httpx.Response(404, request=request)
-            raise httpx.HTTPStatusError("404", request=request, response=response)
+            raise ColabRuntimeError("runtime already reclaimed")
 
     manager = RuntimeManager(
         config=make_config(),
@@ -319,6 +308,30 @@ async def test_disconnect_tolerates_reclaimed_runtime(tmp_path: Path) -> None:
 
     assert status.connected is False
     assert connection_store.load() is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_reraises_unexpected_errors(tmp_path: Path) -> None:
+    from colab_cli.errors import ConnectionError
+
+    connection_store = _connected_store(tmp_path)
+
+    class BrokenColabClient(FakeColabClient):
+        async def unassign_runtime(self, **_: object) -> None:
+            raise ConnectionError("Colab API error HTTP 500")
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=BrokenColabClient,
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ConnectionError):
+        await manager.disconnect()
+
+    assert connection_store.load() is not None
 
 
 @pytest.mark.asyncio
@@ -562,3 +575,256 @@ async def test_execute_cell_reuses_kernel_across_calls(tmp_path: Path) -> None:
     await manager.execute_cell(nb, 1)
 
     assert kernel_client.calls == ["print(1)", "print(2)"]
+
+
+def _connected_store_with_keepalive(tmp_path: Path, pid: int = 4321) -> ConnectionStore:
+    store = ConnectionStore(home=tmp_path)
+    store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+            keepalive_pid=pid,
+        )
+    )
+    return store
+
+
+def _manager_for_keepalive_tests(store: ConnectionStore) -> RuntimeManager:
+    return RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=store,
+        colab_client_factory=FakeColabClient,
+        spawn_keepalive=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_kill_unrelated_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded keepalive PID may have been reused by another process."""
+    import colab_cli.core.runtime as runtime_mod
+
+    killed: list[int] = []
+    monkeypatch.setattr(runtime_mod, "_process_command", lambda pid: "/usr/bin/vim notes.txt")
+    monkeypatch.setattr(runtime_mod.os, "kill", lambda pid, sig: killed.append(pid))
+
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+    await manager.disconnect()
+
+    assert killed == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_kills_matching_keepalive_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import colab_cli.core.runtime as runtime_mod
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        runtime_mod, "_process_command", lambda pid: "python -m colab_cli.cli _internal_keepalive"
+    )
+    monkeypatch.setattr(runtime_mod.os, "kill", lambda pid, sig: killed.append(pid))
+
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+    await manager.disconnect()
+
+    assert killed == [4321]
+
+
+def test_status_reports_keepalive_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import colab_cli.core.runtime as runtime_mod
+
+    monkeypatch.setattr(
+        runtime_mod, "_process_command", lambda pid: "python -m colab_cli.cli _internal_keepalive"
+    )
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+
+    assert manager.status().keepalive_running is True
+
+
+def test_status_reports_keepalive_dead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import colab_cli.core.runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "_process_command", lambda pid: None)
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+
+    assert manager.status().keepalive_running is False
+
+
+def test_status_keepalive_none_when_no_pid_recorded(tmp_path: Path) -> None:
+    manager = _manager_for_keepalive_tests(_connected_store(tmp_path))
+
+    assert manager.status().keepalive_running is None
+
+
+class ClosableJupyterClient(FakeJupyterRestClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_jupyter_client_closed_when_upload_fails(tmp_path: Path) -> None:
+    from colab_cli.errors import ConnectionError
+
+    class FailingClient(ClosableJupyterClient):
+        async def upload_file(self, local_path: Path, remote_path: str):
+            raise ConnectionError("proxy exploded")
+
+    client = FailingClient()
+    local = tmp_path / "f.txt"
+    local.write_text("data")
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: client,
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ConnectionError):
+        await manager.push_file(local, "/content/f.txt")
+
+    assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_jupyter_client_closed_when_create_session_fails(tmp_path: Path) -> None:
+    from colab_cli.errors import ColabRuntimeError
+
+    class FailingClient(ClosableJupyterClient):
+        async def create_session(self, **kwargs: object):
+            raise ColabRuntimeError("runtime reclaimed")
+
+    client = FailingClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: client,
+        kernel_client_factory=lambda **_: FakeKernelClient(),
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ColabRuntimeError):
+        await manager.run_code("print(1)")
+
+    assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_run_code_forwards_timeout_to_kernel(tmp_path: Path) -> None:
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    await manager.run_code("print(1)", timeout=12.5)
+
+    assert kernel_client.timeouts[-1] == 12.5
+
+
+@pytest.mark.asyncio
+async def test_secrets_setup_cell_honors_timeout(tmp_path: Path) -> None:
+    """The injected secrets setup cell runs on the same kernel and must obey
+    the user-supplied idle timeout too, not wait indefinitely."""
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    await manager.run_code("print(1)", secrets={"KEY": "value"}, timeout=9.0)
+
+    assert len(kernel_client.timeouts) == 2  # setup cell + user cell
+    assert kernel_client.timeouts == [9.0, 9.0]
+
+
+@pytest.mark.asyncio
+async def test_keepalive_once_preserves_session_written_during_keepalive(tmp_path: Path) -> None:
+    """Keepalive must not clobber session info another process saved mid-cycle."""
+    store = _connected_store(tmp_path)
+
+    class InterleavingColabClient(FakeColabClient):
+        async def keep_alive(self, **kwargs: object) -> None:
+            # Simulate the main process persisting session info between
+            # keepalive's load and its save.
+            conn = store.load()
+            assert conn is not None
+            conn.session_id = "session-xyz"
+            conn.kernel_id = "kernel-xyz"
+            store.save(conn)
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=store,
+        colab_client_factory=InterleavingColabClient,
+        spawn_keepalive=False,
+    )
+
+    await manager.keepalive_once()
+
+    stored = store.load()
+    assert stored is not None
+    assert stored.session_id == "session-xyz"
+    assert stored.kernel_id == "kernel-xyz"
+    assert stored.last_keepalive_at is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_preserves_keepalive_written_during_session_create(tmp_path: Path) -> None:
+    """Session creation must not clobber keepalive state saved mid-cycle."""
+    store = _connected_store(tmp_path)
+    ts = datetime.now(UTC)
+
+    class InterleavingJupyterClient(FakeJupyterRestClient):
+        async def create_session(self, **kwargs: object) -> JupyterSession:
+            # Simulate the keepalive subprocess persisting a heartbeat between
+            # the main process's load and its save.
+            conn = store.load()
+            assert conn is not None
+            conn.last_keepalive_at = ts
+            store.save(conn)
+            return await super().create_session(**kwargs)
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=store,
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: InterleavingJupyterClient(),
+        kernel_client_factory=lambda **_: FakeKernelClient(),
+        spawn_keepalive=False,
+    )
+
+    await manager.run_code("print('hi')")
+
+    stored = store.load()
+    assert stored is not None
+    assert stored.session_id == "session-123"
+    assert stored.last_keepalive_at == ts

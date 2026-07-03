@@ -65,7 +65,7 @@ class ColabSession:
 
     # ---------------------------------------------------------------- lifecyc
 
-    def __enter__(self) -> "ColabSession":
+    def __enter__(self) -> ColabSession:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
@@ -100,7 +100,9 @@ class ColabSession:
 
         Never raises on remote code errors — inspect ``result.status``.
         Raises ``AuthError``/``ConnectionError``/``ColabRuntimeError`` for
-        transport-level failures.
+        transport-level failures. ``timeout`` is an idle timeout: seconds of
+        kernel silence before ``ExecutionError`` is raised; None waits
+        indefinitely.
         """
         return self._runner.run(
             self._manager.run_code(
@@ -109,8 +111,8 @@ class ColabSession:
                 allow_stdin=allow_stdin,
                 on_stream=on_stream,
                 secrets=secrets,
-            ),
-            timeout=timeout,
+                timeout=timeout,
+            )
         )
 
     # -------------------------------------------------------------------- fs
@@ -126,7 +128,7 @@ class ColabSession:
 
     # -------------------------------------------------------------- notebook
 
-    def notebook(self, path: str | Path) -> "NotebookHandle":
+    def notebook(self, path: str | Path) -> NotebookHandle:
         """Return a :class:`NotebookHandle` bound to this session for cell execution."""
         from .notebook import NotebookHandle
 

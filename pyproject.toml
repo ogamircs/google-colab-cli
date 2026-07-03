@@ -10,16 +10,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-  { name = "OpenAI Codex" },
+  { name = "Amir Tavasoli" },
 ]
 dependencies = [
   "httpx>=0.27.0",
   "pydantic>=2.7.0",
   "typer>=0.12.0",
-  "websockets>=12.0",
+  # >=14.0: ws.py uses additional_headers, which only exists in the asyncio
+  # client that became the default websockets.connect in 14.0.
+  "websockets>=14.0",
   "google-auth>=2.29.0",
   "google-auth-oauthlib>=1.2.0",
-  "rich>=13.7.0",
   "cloudpickle>=3.0.0",
 ]
 
@@ -27,6 +28,8 @@ dependencies = [
 dev = [
   "pytest>=8.3.0",
   "pytest-asyncio>=0.24.0",
+  "ruff>=0.8.0",
+  "mypy>=1.13.0",
 ]
 
 [project.scripts]
@@ -34,6 +37,24 @@ colab = "colab_cli.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/colab_cli"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API is built on function calls in argument defaults.
+"src/colab_cli/cli/*" = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

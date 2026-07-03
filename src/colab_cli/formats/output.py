@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 
-from colab_cli.models import CellResult, NotebookState, RunResult, StatusResult
+from pydantic import BaseModel
+
+from colab_cli.models import RunResult, StatusResult
 
 
-def format_json(
-    model: RunResult | StatusResult | NotebookState | CellResult | dict[str, object],
-) -> str:
-    if hasattr(model, "model_dump"):
+def format_json(model: BaseModel | dict[str, object]) -> str:
+    if isinstance(model, BaseModel):
         return json.dumps(model.model_dump(mode="json"), indent=2)
     return json.dumps(model, indent=2)
 
@@ -23,6 +23,8 @@ def format_human_status(status: StatusResult) -> str:
         parts.append(f"accelerator={status.accelerator}")
     if status.proxy_expires_at:
         parts.append(f"proxy_expires_at={status.proxy_expires_at.isoformat()}")
+    if status.keepalive_running is not None:
+        parts.append(f"keepalive={'running' if status.keepalive_running else 'stopped'}")
     return " | ".join(parts)
 
 

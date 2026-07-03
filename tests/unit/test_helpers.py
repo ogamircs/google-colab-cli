@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -39,14 +39,14 @@ def test_generate_notebook_hash_is_colab_safe() -> None:
 
 
 def test_should_refresh_soon_checks_threshold() -> None:
-    now = datetime(2026, 3, 14, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
 
     assert should_refresh_soon(now + timedelta(minutes=4), now=now) is True
     assert should_refresh_soon(now + timedelta(minutes=6), now=now) is False
 
 
 def test_models_round_trip_datetime_fields() -> None:
-    issued_at = datetime(2026, 3, 14, 12, 0, tzinfo=timezone.utc)
+    issued_at = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
     expires_at = issued_at + timedelta(hours=1)
     token = TokenData(
         access_token="access",

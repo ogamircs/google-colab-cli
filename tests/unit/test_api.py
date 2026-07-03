@@ -28,7 +28,6 @@ from colab_cli.models import (
     TokenData,
 )
 
-
 # ------------------------------------------------------------------- fakes
 
 
@@ -138,6 +137,7 @@ class FakeKernel:
         self.hardcoded_payload = hardcoded_payload
         self.harness_status = harness_status
         self.calls: list[str] = []
+        self.timeouts: list[float | None] = []
 
     async def execute(
         self,
@@ -146,9 +146,10 @@ class FakeKernel:
         cell_index: int = 0,
         allow_stdin: bool = False,
         on_stream=None,
-        timeout_seconds: float = 300.0,
+        timeout_seconds: float | None = None,
     ) -> CellResult:
         self.calls.append(code)
+        self.timeouts.append(timeout_seconds)
         if "_colab_cli_run" in code:
             match = re.search(r"_SLUG_DIR = '([^']+)'", code)
             assert match, "harness code missing _SLUG_DIR"
@@ -334,6 +335,17 @@ def test_session_run_returns_run_result_and_does_not_raise_on_remote_error(
         result = session.run("raise ValueError('x')")
         assert result.status == "error"
         assert result.error == "oops"
+    finally:
+        session.close()
+
+
+def test_session_run_forwards_timeout_as_kernel_idle_timeout(tmp_path: Path, runner) -> None:
+    """timeout applies to kernel message silence, not the local future."""
+    mgr, _, _, kernel, *_ = build_manager(tmp_path, seed=seed_connection())
+    session = colab(manager=mgr, runner=runner)
+    try:
+        session.run("print(1)", timeout=7.5)
+        assert kernel.timeouts[-1] == 7.5
     finally:
         session.close()
 

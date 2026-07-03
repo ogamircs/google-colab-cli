@@ -23,8 +23,8 @@ def parse_secrets_file(path: Path) -> dict[str, str]:
     """Parse a .env-style secrets file into a dict of key-value pairs."""
     try:
         text = path.read_text()
-    except FileNotFoundError:
-        raise ConfigError(f"Secrets file not found: {path}")
+    except FileNotFoundError as exc:
+        raise ConfigError(f"Secrets file not found: {path}") from exc
 
     secrets: dict[str, str] = {}
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
@@ -33,8 +33,8 @@ def parse_secrets_file(path: Path) -> dict[str, str]:
             continue
         try:
             key, value = parse_key_value(line)
-        except ConfigError:
-            raise ConfigError(f"Invalid secret at {path}:{lineno} — expected KEY=VALUE")
+        except ConfigError as exc:
+            raise ConfigError(f"Invalid secret at {path}:{lineno} — expected KEY=VALUE") from exc
         secrets[key] = value
     return secrets
 

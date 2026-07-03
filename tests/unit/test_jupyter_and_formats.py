@@ -4,17 +4,18 @@ import base64
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from colab_cli.core.jupyter.rest import JupyterRestClient, decode_contents_payload, encode_contents_payload
-from colab_cli.core.jupyter.ws import KernelMessageAccumulator
-from colab_cli.errors import ExecutionError
+from colab_cli.core.jupyter.ws import KernelMessageAccumulator, KernelWebSocketClient
+from colab_cli.errors import AuthError, ColabRuntimeError, ConnectionError, ExecutionError
 from colab_cli.formats.notebook import extract_code_cells
 from colab_cli.models import JupyterContent
 
 
 def test_encode_contents_payload_uses_text_for_utf8() -> None:
-    payload = encode_contents_payload("hello world".encode("utf-8"))
+    payload = encode_contents_payload(b"hello world")
 
     assert payload["format"] == "text"
     assert payload["content"] == "hello world"
@@ -149,6 +150,169 @@ def test_kernel_message_accumulator_rejects_input_request_when_not_interactive()
             },
             allow_stdin=False,
         )
+
+
+def _rest_client_returning(status_code: int) -> JupyterRestClient:
+    return JupyterRestClient(
+        base_url="https://proxy.example.com",
+        access_token="access-token",
+        proxy_token="proxy-token",
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(status_code))
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_session_maps_404_to_runtime_error() -> None:
+    client = _rest_client_returning(404)
+    try:
+        with pytest.raises(ColabRuntimeError):
+            await client.create_session(path="/content/x.py", name="x.py")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_session_maps_403_to_auth_error() -> None:
+    client = _rest_client_returning(403)
+    try:
+        with pytest.raises(AuthError):
+            await client.create_session(path="/content/x.py", name="x.py")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_contents_maps_404_to_execution_error_naming_the_path() -> None:
+    client = _rest_client_returning(404)
+    try:
+        with pytest.raises(ExecutionError, match="/content/missing.csv"):
+            await client.get_contents("/content/missing.csv")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_rest_maps_transport_error_to_connection_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network unreachable", request=request)
+
+    client = JupyterRestClient(
+        base_url="https://proxy.example.com",
+        access_token="access-token",
+        proxy_token="proxy-token",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    try:
+        with pytest.raises(ConnectionError):
+            await client.list_sessions()
+    finally:
+        await client.aclose()
+
+
+def _ws_client() -> KernelWebSocketClient:
+    return KernelWebSocketClient(
+        base_url="https://proxy.example.com",
+        access_token="access-token",
+        proxy_token="proxy-token",
+        kernel_id="kernel-123",
+    )
+
+
+class _ConnectCM:
+    """Stand-in for websockets.connect: raises on enter or yields a fake socket."""
+
+    def __init__(self, *, raises: Exception | None = None, websocket: object = None) -> None:
+        self._raises = raises
+        self._websocket = websocket
+
+    async def __aenter__(self) -> object:
+        if self._raises is not None:
+            raise self._raises
+        return self._websocket
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+
+def _handshake_failure(status_code: int) -> Exception:
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(status_code, "nope", Headers()))
+
+
+@pytest.mark.asyncio
+async def test_execute_maps_handshake_404_to_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import colab_cli.core.jupyter.ws as ws_mod
+
+    monkeypatch.setattr(
+        ws_mod.websockets, "connect", lambda *a, **k: _ConnectCM(raises=_handshake_failure(404))
+    )
+
+    with pytest.raises(ColabRuntimeError):
+        await _ws_client().execute("print(1)")
+
+
+@pytest.mark.asyncio
+async def test_execute_maps_handshake_401_to_auth_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import colab_cli.core.jupyter.ws as ws_mod
+
+    monkeypatch.setattr(
+        ws_mod.websockets, "connect", lambda *a, **k: _ConnectCM(raises=_handshake_failure(401))
+    )
+
+    with pytest.raises(AuthError):
+        await _ws_client().execute("print(1)")
+
+
+@pytest.mark.asyncio
+async def test_execute_maps_mid_run_disconnect_to_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from websockets.exceptions import ConnectionClosedError
+
+    import colab_cli.core.jupyter.ws as ws_mod
+
+    class DroppingWebSocket:
+        async def send(self, _: str) -> None:
+            return None
+
+        async def recv(self) -> str:
+            raise ConnectionClosedError(None, None)
+
+    monkeypatch.setattr(
+        ws_mod.websockets,
+        "connect",
+        lambda *a, **k: _ConnectCM(websocket=DroppingWebSocket()),
+    )
+
+    with pytest.raises(ColabRuntimeError):
+        await _ws_client().execute("print(1)")
+
+
+@pytest.mark.asyncio
+async def test_execute_maps_idle_timeout_to_execution_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import colab_cli.core.jupyter.ws as ws_mod
+
+    class SilentWebSocket:
+        async def send(self, _: str) -> None:
+            return None
+
+        async def recv(self) -> str:
+            await asyncio.sleep(60)
+            return "{}"
+
+    monkeypatch.setattr(
+        ws_mod.websockets,
+        "connect",
+        lambda *a, **k: _ConnectCM(websocket=SilentWebSocket()),
+    )
+
+    with pytest.raises(ExecutionError, match="0.01"):
+        await _ws_client().execute("print(1)", timeout_seconds=0.01)
 
 
 def test_extract_code_cells_returns_only_code_sources(tmp_path: Path) -> None:
