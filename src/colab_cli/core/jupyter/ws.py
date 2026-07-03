@@ -9,9 +9,10 @@ from collections.abc import Callable
 from typing import Any
 
 import websockets
+from websockets.exceptions import ConnectionClosed, InvalidStatus, WebSocketException
 
 from colab_cli.core.colab.headers import build_colab_headers
-from colab_cli.errors import ExecutionError
+from colab_cli.errors import AuthError, ColabRuntimeError, ConnectionError, ExecutionError
 from colab_cli.models import CellResult
 
 
@@ -102,48 +103,67 @@ class KernelWebSocketClient:
         ws_url = f"{ws_url}/api/kernels/{self.kernel_id}/channels?session_id={session_id}"
         msg_id = uuid.uuid4().hex
         accumulator = KernelMessageAccumulator(parent_msg_id=msg_id)
-        async with websockets.connect(
-            ws_url,
-            additional_headers=build_colab_headers(
-                self.access_token,
-                proxy_token=self.proxy_token,
-            ),
-            ping_interval=None,  # Disable auto-ping; Colab proxy may not forward pings
-            ping_timeout=None,
-            open_timeout=30,
-            close_timeout=10,
-        ) as websocket:
-            await websocket.send(
-                json.dumps(
-                    {
-                        "channel": "shell",
-                        "header": {
-                            "msg_id": msg_id,
-                            "username": "colab-cli",
-                            "session": session_id,
-                            "msg_type": "execute_request",
-                            "version": "5.3",
-                        },
-                        "parent_header": {},
-                        "metadata": {},
-                        "content": {
-                            "code": code,
-                            "silent": False,
-                            "store_history": True,
-                            "user_expressions": {},
-                            "allow_stdin": allow_stdin,
-                            "stop_on_error": True,
-                        },
-                    }
+        try:
+            async with websockets.connect(
+                ws_url,
+                additional_headers=build_colab_headers(
+                    self.access_token,
+                    proxy_token=self.proxy_token,
+                ),
+                ping_interval=None,  # Disable auto-ping; Colab proxy may not forward pings
+                ping_timeout=None,
+                open_timeout=30,
+                close_timeout=10,
+            ) as websocket:
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "channel": "shell",
+                            "header": {
+                                "msg_id": msg_id,
+                                "username": "colab-cli",
+                                "session": session_id,
+                                "msg_type": "execute_request",
+                                "version": "5.3",
+                            },
+                            "parent_header": {},
+                            "metadata": {},
+                            "content": {
+                                "code": code,
+                                "silent": False,
+                                "store_history": True,
+                                "user_expressions": {},
+                                "allow_stdin": allow_stdin,
+                                "stop_on_error": True,
+                            },
+                        }
+                    )
                 )
-            )
-            await self._drain_messages(
-                websocket,
-                accumulator=accumulator,
-                on_stream=on_stream,
-                allow_stdin=allow_stdin,
-                timeout_seconds=timeout_seconds,
-            )
+                await self._drain_messages(
+                    websocket,
+                    accumulator=accumulator,
+                    on_stream=on_stream,
+                    allow_stdin=allow_stdin,
+                    timeout_seconds=timeout_seconds,
+                )
+        except InvalidStatus as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise AuthError(
+                    f"Kernel endpoint rejected credentials (HTTP {status}). "
+                    "Try `colab auth login` or reconnect with `colab connect`."
+                ) from exc
+            raise ColabRuntimeError(
+                f"Kernel endpoint returned HTTP {status} — the runtime may have been "
+                "reclaimed. Run `colab connect` to allocate a new one."
+            ) from exc
+        except ConnectionClosed as exc:
+            raise ColabRuntimeError(
+                "Kernel WebSocket closed unexpectedly — the runtime may have been "
+                "reclaimed. Run `colab connect` to allocate a new one."
+            ) from exc
+        except (OSError, WebSocketException) as exc:
+            raise ConnectionError(f"Could not reach the Colab runtime kernel: {exc}") from exc
         return accumulator.to_cell_result(index=cell_index, source=code)
 
     async def _drain_messages(

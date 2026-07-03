@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from colab_cli.errors import AuthError, ColabRuntimeError, ConnectionError, ExecutionError
 from colab_cli.models import JupyterContent, JupyterSession
 
 from colab_cli.core.colab.headers import build_colab_headers
@@ -60,6 +61,43 @@ class JupyterRestClient:
             proxy_token=self.proxy_token,
         )
 
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        not_found: str | None = None,
+        **kwargs: object,
+    ) -> httpx.Response:
+        """Issue a request, mapping failures onto the colab-cli exception hierarchy.
+
+        not_found is the message for a 404 on endpoints where it means a missing
+        remote path; when None, a 404 means the runtime proxy itself is gone.
+        """
+        try:
+            response = await self._client.request(method, url, headers=self._headers(), **kwargs)
+        except httpx.TransportError as exc:
+            raise ConnectionError(f"Could not reach the Colab runtime proxy: {exc}") from exc
+        if response.status_code in (401, 403):
+            raise AuthError(
+                f"Runtime proxy rejected credentials (HTTP {response.status_code}). "
+                "Try `colab auth login` or reconnect with `colab connect`."
+            )
+        if response.status_code in (404, 410):
+            if not_found is not None:
+                raise ExecutionError(not_found)
+            raise ColabRuntimeError(
+                f"Colab runtime is unavailable (HTTP {response.status_code}) — it may "
+                "have been reclaimed. Run `colab connect` to allocate a new one."
+            )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ConnectionError(
+                f"Jupyter API error HTTP {response.status_code} for {url}"
+            ) from exc
+        return response
+
     async def create_session(
         self,
         *,
@@ -68,9 +106,9 @@ class JupyterRestClient:
         session_type: str = "notebook",
         kernel_name: str = "python3",
     ) -> JupyterSession:
-        response = await self._client.post(
+        response = await self._send(
+            "POST",
             f"{self.base_url}/api/sessions",
-            headers=self._headers(),
             json={
                 "path": path,
                 "name": name,
@@ -78,37 +116,32 @@ class JupyterRestClient:
                 "kernel": {"name": kernel_name},
             },
         )
-        response.raise_for_status()
         return JupyterSession.model_validate(response.json())
 
     async def list_sessions(self) -> list[JupyterSession]:
-        response = await self._client.get(
-            f"{self.base_url}/api/sessions",
-            headers=self._headers(),
-        )
-        response.raise_for_status()
+        response = await self._send("GET", f"{self.base_url}/api/sessions")
         return [JupyterSession.model_validate(item) for item in response.json()]
 
     async def get_contents(self, path: str) -> JupyterContent:
-        response = await self._client.get(
+        response = await self._send(
+            "GET",
             f"{self.base_url}/api/contents/{path.lstrip('/')}",
-            headers=self._headers(),
+            not_found=f"Remote path not found: {path}",
         )
-        response.raise_for_status()
         return JupyterContent.model_validate(response.json())
 
     async def save_contents(self, path: str, data: bytes) -> JupyterContent:
         encoded = encode_contents_payload(data)
-        response = await self._client.put(
+        response = await self._send(
+            "PUT",
             f"{self.base_url}/api/contents/{path.lstrip('/')}",
-            headers=self._headers(),
+            not_found=f"Remote path not found: {path}",
             json={
                 "type": "file",
                 "format": encoded["format"],
                 "content": encoded["content"],
             },
         )
-        response.raise_for_status()
         return JupyterContent.model_validate(response.json())
 
     async def list_directory(self, path: str = "") -> list[JupyterContent]:

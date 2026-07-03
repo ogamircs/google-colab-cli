@@ -283,29 +283,16 @@ async def test_disconnect_clears_connection(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_disconnect_tolerates_reclaimed_runtime(tmp_path: Path) -> None:
-    """Colab sometimes 404s on unassign when the runtime is already gone.
-    Local cleanup should still proceed so the user is not stuck with a stale
-    active.json."""
-    import httpx
+    """Colab reports the runtime as gone on unassign when it was already
+    reclaimed. Local cleanup should still proceed so the user is not stuck
+    with a stale active.json."""
+    from colab_cli.errors import ColabRuntimeError
 
-    connection_store = ConnectionStore(home=tmp_path)
-    connection_store.save(
-        ActiveConnection(
-            notebook_hash="hash",
-            endpoint_id="endpoint-123",
-            proxy_url="https://proxy.example.com",
-            proxy_token="proxy-token",
-            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
-            accelerator="T4",
-            authuser=0,
-        )
-    )
+    connection_store = _connected_store(tmp_path)
 
     class StaleColabClient(FakeColabClient):
         async def unassign_runtime(self, **_: object) -> None:
-            request = httpx.Request("GET", "https://colab.research.google.com/tun/m/unassign/x")
-            response = httpx.Response(404, request=request)
-            raise httpx.HTTPStatusError("404", request=request, response=response)
+            raise ColabRuntimeError("runtime already reclaimed")
 
     manager = RuntimeManager(
         config=make_config(),
@@ -319,6 +306,30 @@ async def test_disconnect_tolerates_reclaimed_runtime(tmp_path: Path) -> None:
 
     assert status.connected is False
     assert connection_store.load() is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_reraises_unexpected_errors(tmp_path: Path) -> None:
+    from colab_cli.errors import ConnectionError
+
+    connection_store = _connected_store(tmp_path)
+
+    class BrokenColabClient(FakeColabClient):
+        async def unassign_runtime(self, **_: object) -> None:
+            raise ConnectionError("Colab API error HTTP 500")
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=connection_store,
+        colab_client_factory=BrokenColabClient,
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ConnectionError):
+        await manager.disconnect()
+
+    assert connection_store.load() is not None
 
 
 @pytest.mark.asyncio
