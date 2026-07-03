@@ -73,6 +73,7 @@ class StatusResult(StrictModel):
     proxy_expires_at: datetime | None = None
     last_keepalive_at: datetime | None = None
     notebook_hash: str | None = None
+    keepalive_running: bool | None = None
 
 
 class CellResult(StrictModel):

@@ -577,6 +577,94 @@ async def test_execute_cell_reuses_kernel_across_calls(tmp_path: Path) -> None:
     assert kernel_client.calls == ["print(1)", "print(2)"]
 
 
+def _connected_store_with_keepalive(tmp_path: Path, pid: int = 4321) -> ConnectionStore:
+    store = ConnectionStore(home=tmp_path)
+    store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint-123",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+            accelerator="T4",
+            authuser=0,
+            keepalive_pid=pid,
+        )
+    )
+    return store
+
+
+def _manager_for_keepalive_tests(store: ConnectionStore) -> RuntimeManager:
+    return RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=store,
+        colab_client_factory=FakeColabClient,
+        spawn_keepalive=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_does_not_kill_unrelated_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorded keepalive PID may have been reused by another process."""
+    import colab_cli.core.runtime as runtime_mod
+
+    killed: list[int] = []
+    monkeypatch.setattr(runtime_mod, "_process_command", lambda pid: "/usr/bin/vim notes.txt")
+    monkeypatch.setattr(runtime_mod.os, "kill", lambda pid, sig: killed.append(pid))
+
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+    await manager.disconnect()
+
+    assert killed == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_kills_matching_keepalive_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import colab_cli.core.runtime as runtime_mod
+
+    killed: list[int] = []
+    monkeypatch.setattr(
+        runtime_mod, "_process_command", lambda pid: "python -m colab_cli.cli _internal_keepalive"
+    )
+    monkeypatch.setattr(runtime_mod.os, "kill", lambda pid, sig: killed.append(pid))
+
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+    await manager.disconnect()
+
+    assert killed == [4321]
+
+
+def test_status_reports_keepalive_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import colab_cli.core.runtime as runtime_mod
+
+    monkeypatch.setattr(
+        runtime_mod, "_process_command", lambda pid: "python -m colab_cli.cli _internal_keepalive"
+    )
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+
+    assert manager.status().keepalive_running is True
+
+
+def test_status_reports_keepalive_dead(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import colab_cli.core.runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "_process_command", lambda pid: None)
+    manager = _manager_for_keepalive_tests(_connected_store_with_keepalive(tmp_path))
+
+    assert manager.status().keepalive_running is False
+
+
+def test_status_keepalive_none_when_no_pid_recorded(tmp_path: Path) -> None:
+    manager = _manager_for_keepalive_tests(_connected_store(tmp_path))
+
+    assert manager.status().keepalive_running is None
+
+
 class ClosableJupyterClient(FakeJupyterRestClient):
     def __init__(self) -> None:
         super().__init__()

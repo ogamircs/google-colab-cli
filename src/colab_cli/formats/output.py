@@ -23,6 +23,8 @@ def format_human_status(status: StatusResult) -> str:
         parts.append(f"accelerator={status.accelerator}")
     if status.proxy_expires_at:
         parts.append(f"proxy_expires_at={status.proxy_expires_at.isoformat()}")
+    if status.keepalive_running is not None:
+        parts.append(f"keepalive={'running' if status.keepalive_running else 'stopped'}")
     return " | ".join(parts)
 
 

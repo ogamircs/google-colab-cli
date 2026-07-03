@@ -113,6 +113,9 @@ class RuntimeManager:
         connection = self.connection_store.load()
         if connection is None:
             return StatusResult(connected=False)
+        keepalive_running = None
+        if connection.keepalive_pid is not None:
+            keepalive_running = _is_keepalive_process(connection.keepalive_pid)
         return StatusResult(
             connected=True,
             endpoint=connection.endpoint_id,
@@ -120,6 +123,7 @@ class RuntimeManager:
             proxy_expires_at=connection.proxy_expires_at,
             last_keepalive_at=connection.last_keepalive_at,
             notebook_hash=connection.notebook_hash,
+            keepalive_running=keepalive_running,
         )
 
     async def disconnect(self) -> StatusResult:
@@ -444,6 +448,10 @@ class RuntimeManager:
     def _stop_keepalive_process(self, pid: int | None) -> None:
         if pid is None:
             return
+        if not _is_keepalive_process(pid):
+            # The PID may have been reused by an unrelated process (e.g. after
+            # a reboot) — never signal something we didn't spawn.
+            return
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
@@ -475,6 +483,29 @@ def create_runtime_manager(
         connection_store=connection_store,
         spawn_keepalive=spawn_keepalive,
     )
+
+
+_KEEPALIVE_COMMAND_MARKER = "_internal_keepalive"
+
+
+def _process_command(pid: int) -> str | None:
+    """Return the command line of a running process, or None if it is gone."""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    command = result.stdout.strip()
+    return command or None
+
+
+def _is_keepalive_process(pid: int) -> bool:
+    command = _process_command(pid)
+    return command is not None and _KEEPALIVE_COMMAND_MARKER in command
 
 
 def _parse_ttl_seconds(token_ttl: str | None) -> int:
