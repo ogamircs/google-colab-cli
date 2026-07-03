@@ -562,3 +562,69 @@ async def test_execute_cell_reuses_kernel_across_calls(tmp_path: Path) -> None:
     await manager.execute_cell(nb, 1)
 
     assert kernel_client.calls == ["print(1)", "print(2)"]
+
+
+@pytest.mark.asyncio
+async def test_keepalive_once_preserves_session_written_during_keepalive(tmp_path: Path) -> None:
+    """Keepalive must not clobber session info another process saved mid-cycle."""
+    store = _connected_store(tmp_path)
+
+    class InterleavingColabClient(FakeColabClient):
+        async def keep_alive(self, **kwargs: object) -> None:
+            # Simulate the main process persisting session info between
+            # keepalive's load and its save.
+            conn = store.load()
+            assert conn is not None
+            conn.session_id = "session-xyz"
+            conn.kernel_id = "kernel-xyz"
+            store.save(conn)
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=store,
+        colab_client_factory=InterleavingColabClient,
+        spawn_keepalive=False,
+    )
+
+    await manager.keepalive_once()
+
+    stored = store.load()
+    assert stored is not None
+    assert stored.session_id == "session-xyz"
+    assert stored.kernel_id == "kernel-xyz"
+    assert stored.last_keepalive_at is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_session_preserves_keepalive_written_during_session_create(tmp_path: Path) -> None:
+    """Session creation must not clobber keepalive state saved mid-cycle."""
+    store = _connected_store(tmp_path)
+    ts = datetime.now(UTC)
+
+    class InterleavingJupyterClient(FakeJupyterRestClient):
+        async def create_session(self, **kwargs: object) -> JupyterSession:
+            # Simulate the keepalive subprocess persisting a heartbeat between
+            # the main process's load and its save.
+            conn = store.load()
+            assert conn is not None
+            conn.last_keepalive_at = ts
+            store.save(conn)
+            return await super().create_session(**kwargs)
+
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=store,
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: InterleavingJupyterClient(),
+        kernel_client_factory=lambda **_: FakeKernelClient(),
+        spawn_keepalive=False,
+    )
+
+    await manager.run_code("print('hi')")
+
+    stored = store.load()
+    assert stored is not None
+    assert stored.session_id == "session-123"
+    assert stored.last_keepalive_at == ts

@@ -324,6 +324,7 @@ class RuntimeManager:
             return StatusResult(connected=False)
         token = self.credentials.get_valid_token()
         client = self._colab_client_factory()
+        fields: dict[str, Any] = {}
         try:
             await client.keep_alive(
                 access_token=token.access_token,
@@ -335,11 +336,13 @@ class RuntimeManager:
                     access_token=token.access_token,
                     endpoint_id=connection.endpoint_id,
                 )
-                connection.proxy_url = proxy.url
-                connection.proxy_token = proxy.token
-                connection.proxy_expires_at = ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl))
-            connection.last_keepalive_at = utc_now()
-            self.connection_store.save(connection)
+                fields.update(
+                    proxy_url=proxy.url,
+                    proxy_token=proxy.token,
+                    proxy_expires_at=ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl)),
+                )
+            fields["last_keepalive_at"] = utc_now()
+            self._persist_fields(connection, **fields)
         finally:
             await _maybe_aclose(client)
         return self.status()
@@ -382,10 +385,12 @@ class RuntimeManager:
                 )
             finally:
                 await _maybe_aclose(client)
-            connection.proxy_url = proxy.url
-            connection.proxy_token = proxy.token
-            connection.proxy_expires_at = ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl))
-            self.connection_store.save(connection)
+            connection = self._persist_fields(
+                connection,
+                proxy_url=proxy.url,
+                proxy_token=proxy.token,
+                proxy_expires_at=ttl_to_expiry(_parse_ttl_seconds(proxy.token_ttl)),
+            )
         return connection
 
     async def _ensure_session(self, *, source_name: str) -> ActiveConnection:
@@ -405,10 +410,27 @@ class RuntimeManager:
             session_type="notebook",
         )
         await _maybe_aclose(client)
-        connection.session_id = session.id
-        connection.kernel_id = session.kernel.id
-        self.connection_store.save(connection)
-        return connection
+        return self._persist_fields(
+            connection,
+            session_id=session.id,
+            kernel_id=session.kernel.id,
+        )
+
+    def _persist_fields(self, connection: ActiveConnection, **fields: Any) -> ActiveConnection:
+        """Merge fields into the in-memory connection and the on-disk state.
+
+        Persists via ConnectionStore.update so a concurrent writer's fields
+        (keepalive heartbeat vs session ids) are never clobbered.
+        """
+        for key, value in fields.items():
+            setattr(connection, key, value)
+
+        def _apply(conn: ActiveConnection) -> ActiveConnection:
+            for key, value in fields.items():
+                setattr(conn, key, value)
+            return conn
+
+        return self.connection_store.update(_apply) or connection
 
     def _spawn_keepalive_process(self) -> int | None:
         try:

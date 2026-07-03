@@ -128,6 +128,66 @@ def test_connection_store_delete_clears_file(tmp_path) -> None:
     assert store.load() is None
 
 
+def test_connection_store_update_applies_mutation_to_latest_disk_state(tmp_path) -> None:
+    store = ConnectionStore(home=tmp_path)
+    store.save(
+        ActiveConnection(
+            notebook_hash="hash",
+            endpoint_id="endpoint",
+            proxy_url="https://proxy.example.com",
+            proxy_token="proxy-token",
+            proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    def set_session(conn: ActiveConnection) -> ActiveConnection:
+        conn.session_id = "session-abc"
+        conn.kernel_id = "kernel-abc"
+        return conn
+
+    store.update(set_session)
+
+    ts = datetime.now(UTC)
+
+    def set_keepalive(conn: ActiveConnection) -> ActiveConnection:
+        conn.last_keepalive_at = ts
+        return conn
+
+    store.update(set_keepalive)
+
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.session_id == "session-abc"
+    assert loaded.kernel_id == "kernel-abc"
+    assert loaded.last_keepalive_at == ts
+
+
+def test_connection_store_update_returns_none_without_connection(tmp_path) -> None:
+    store = ConnectionStore(home=tmp_path)
+
+    result = store.update(lambda conn: conn)
+
+    assert result is None
+    assert store.load() is None
+
+
+def test_connection_store_save_leaves_no_temp_files(tmp_path) -> None:
+    store = ConnectionStore(home=tmp_path)
+    connection = ActiveConnection(
+        notebook_hash="hash",
+        endpoint_id="endpoint",
+        proxy_url="https://proxy.example.com",
+        proxy_token="proxy-token",
+        proxy_expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    store.save(connection)
+    store.save(connection)
+
+    assert not list(store.path.parent.glob("*.tmp"))
+    assert store.load() == connection
+
+
 def test_connection_store_saves_active_state_with_owner_only_permissions(tmp_path) -> None:
     store = ConnectionStore(home=tmp_path)
     connection = ActiveConnection(
