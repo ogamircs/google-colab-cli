@@ -744,6 +744,27 @@ async def test_run_code_forwards_timeout_to_kernel(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_secrets_setup_cell_honors_timeout(tmp_path: Path) -> None:
+    """The injected secrets setup cell runs on the same kernel and must obey
+    the user-supplied idle timeout too, not wait indefinitely."""
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    await manager.run_code("print(1)", secrets={"KEY": "value"}, timeout=9.0)
+
+    assert len(kernel_client.timeouts) == 2  # setup cell + user cell
+    assert kernel_client.timeouts == [9.0, 9.0]
+
+
+@pytest.mark.asyncio
 async def test_keepalive_once_preserves_session_written_during_keepalive(tmp_path: Path) -> None:
     """Keepalive must not clobber session info another process saved mid-cycle."""
     store = _connected_store(tmp_path)

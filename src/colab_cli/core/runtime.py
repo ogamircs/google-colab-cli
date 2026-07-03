@@ -162,7 +162,7 @@ class RuntimeManager:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=source_name)
         kernel_client = self._make_kernel_client(connection)
-        error = await self._inject_secrets(kernel_client, secrets, started)
+        error = await self._inject_secrets(kernel_client, secrets, started, timeout=timeout)
         if error:
             return error
         cell = await kernel_client.execute(
@@ -205,7 +205,7 @@ class RuntimeManager:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=path.name)
         kernel_client = self._make_kernel_client(connection)
-        error = await self._inject_secrets(kernel_client, secrets, started)
+        error = await self._inject_secrets(kernel_client, secrets, started, timeout=timeout)
         if error:
             return error
         cells = extract_code_cells(path)
@@ -269,7 +269,7 @@ class RuntimeManager:
         source = doc.source_of(index)
         connection = await self._ensure_session(source_name=path.name)
         kernel_client = self._make_kernel_client(connection)
-        error = await self._inject_secrets(kernel_client, secrets, started)
+        error = await self._inject_secrets(kernel_client, secrets, started, timeout=timeout)
         if error is not None:
             setup = error.cells[0] if error.cells else None
             return CellResult(
@@ -360,7 +360,12 @@ class RuntimeManager:
         )
 
     async def _inject_secrets(
-        self, kernel_client: Any, secrets: dict[str, str] | None, started: float
+        self,
+        kernel_client: Any,
+        secrets: dict[str, str] | None,
+        started: float,
+        *,
+        timeout: float | None = None,
     ) -> RunResult | None:
         """Execute secrets setup cell. Returns RunResult on failure, None on success."""
         if secrets is None:
@@ -369,6 +374,7 @@ class RuntimeManager:
             build_secrets_setup_code(secrets),
             cell_index=0,
             allow_stdin=False,
+            timeout_seconds=timeout,
         )
         if setup.status == "error":
             return _cell_to_run_result(setup, duration_seconds=time.monotonic() - started)
