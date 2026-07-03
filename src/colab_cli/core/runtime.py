@@ -151,6 +151,7 @@ class RuntimeManager:
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
         secrets: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=source_name)
@@ -163,6 +164,7 @@ class RuntimeManager:
             cell_index=0,
             allow_stdin=allow_stdin,
             on_stream=on_stream,
+            timeout_seconds=timeout,
         )
         return _cell_to_run_result(cell, duration_seconds=time.monotonic() - started)
 
@@ -173,6 +175,7 @@ class RuntimeManager:
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
         secrets: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> RunResult:
         return await self.run_code(
             path.read_text(),
@@ -180,6 +183,7 @@ class RuntimeManager:
             allow_stdin=allow_stdin,
             on_stream=on_stream,
             secrets=secrets,
+            timeout=timeout,
         )
 
     async def run_notebook(
@@ -190,6 +194,7 @@ class RuntimeManager:
         on_stream: Callable[[str, str], Any] | None = None,
         on_cell_start: Callable[[int, int], Any] | None = None,
         secrets: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> RunResult:
         started = time.monotonic()
         connection = await self._ensure_session(source_name=path.name)
@@ -209,6 +214,7 @@ class RuntimeManager:
                 cell_index=index,
                 allow_stdin=allow_stdin,
                 on_stream=on_stream,
+                timeout_seconds=timeout,
             )
             results.append(cell_result)
             if cell_result.status == "error":
@@ -237,6 +243,7 @@ class RuntimeManager:
         on_stream: Callable[[str, str], Any] | None = None,
         secrets: dict[str, str] | None = None,
         write_back: bool = True,
+        timeout: float | None = None,
     ) -> CellResult:
         """Execute a single code cell of a local notebook on the runtime kernel.
 
@@ -273,6 +280,7 @@ class RuntimeManager:
             cell_index=index,
             allow_stdin=allow_stdin,
             on_stream=on_stream,
+            timeout_seconds=timeout,
         )
         if write_back:
             doc.write_outputs(index, result)

@@ -85,7 +85,9 @@ class NotebookHandle:
         """Execute cell ``index`` on the bound session's kernel; write outputs back.
 
         Never raises on remote code errors — inspect ``result.status``. Raises
-        ``ConnectionError`` if this handle is not bound to a session.
+        ``ConnectionError`` if this handle is not bound to a session. ``timeout``
+        is an idle timeout: seconds of kernel silence before ``ExecutionError``
+        is raised; None waits indefinitely.
         """
         if self._session is None:
             raise ConnectionError(
@@ -101,8 +103,8 @@ class NotebookHandle:
                 on_stream=on_stream,
                 allow_stdin=allow_stdin,
                 write_back=write_back,
-            ),
-            timeout=timeout,
+                timeout=timeout,
+            )
         )
 
 

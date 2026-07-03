@@ -99,9 +99,11 @@ class FakeJupyterRestClient:
 class FakeKernelClient:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.timeouts: list[float | None] = []
 
-    async def execute(self, code: str, *, cell_index: int = 0, allow_stdin: bool = False, on_stream=None, timeout_seconds: float = 300.0) -> CellResult:
+    async def execute(self, code: str, *, cell_index: int = 0, allow_stdin: bool = False, on_stream=None, timeout_seconds: float | None = None) -> CellResult:
         self.calls.append(code)
+        self.timeouts.append(timeout_seconds)
         if code.strip().startswith("raise"):
             return CellResult(
                 index=cell_index,
@@ -573,6 +575,24 @@ async def test_execute_cell_reuses_kernel_across_calls(tmp_path: Path) -> None:
     await manager.execute_cell(nb, 1)
 
     assert kernel_client.calls == ["print(1)", "print(2)"]
+
+
+@pytest.mark.asyncio
+async def test_run_code_forwards_timeout_to_kernel(tmp_path: Path) -> None:
+    kernel_client = FakeKernelClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: FakeJupyterRestClient(),
+        kernel_client_factory=lambda **_: kernel_client,
+        spawn_keepalive=False,
+    )
+
+    await manager.run_code("print(1)", timeout=12.5)
+
+    assert kernel_client.timeouts[-1] == 12.5
 
 
 @pytest.mark.asyncio

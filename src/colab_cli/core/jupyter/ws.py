@@ -96,8 +96,14 @@ class KernelWebSocketClient:
         cell_index: int = 0,
         allow_stdin: bool = False,
         on_stream: Callable[[str, str], Any] | None = None,
-        timeout_seconds: float = 300.0,
+        timeout_seconds: float | None = None,
     ) -> CellResult:
+        """Execute code on the kernel, draining messages until the reply is idle.
+
+        timeout_seconds is an idle timeout: the maximum silence between kernel
+        messages, not total wall-clock. None (the default) waits indefinitely,
+        which suits long-running training cells that print sporadically.
+        """
         ws_url = self.base_url.replace("https://", "wss://").replace("http://", "ws://")
         session_id = uuid.uuid4().hex
         ws_url = f"{ws_url}/api/kernels/{self.kernel_id}/channels?session_id={session_id}"
@@ -173,10 +179,21 @@ class KernelWebSocketClient:
         accumulator: KernelMessageAccumulator,
         on_stream: Callable[[str, str], Any] | None,
         allow_stdin: bool,
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> None:
         while not accumulator.is_complete:
-            raw_message = await asyncio.wait_for(websocket.recv(), timeout=timeout_seconds)
+            if timeout_seconds is None:
+                raw_message = await websocket.recv()
+            else:
+                try:
+                    raw_message = await asyncio.wait_for(
+                        websocket.recv(), timeout=timeout_seconds
+                    )
+                except TimeoutError as exc:
+                    raise ExecutionError(
+                        f"Remote execution produced no kernel output for "
+                        f"{timeout_seconds}s (idle timeout)."
+                    ) from exc
             message = json.loads(raw_message)
             accumulator.apply(message, allow_stdin=allow_stdin)
             if on_stream and message.get("msg_type") == "stream":

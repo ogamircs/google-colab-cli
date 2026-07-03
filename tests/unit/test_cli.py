@@ -28,8 +28,9 @@ class FakeRuntimeManager:
     async def disconnect(self) -> StatusResult:
         return StatusResult(connected=False)
 
-    async def run_code(self, code: str, source_name: str = "inline.py", on_stream=None, secrets=None) -> RunResult:
+    async def run_code(self, code: str, source_name: str = "inline.py", on_stream=None, secrets=None, timeout=None) -> RunResult:
         self.last_secrets = secrets
+        self.last_timeout = timeout
         return RunResult(
             status="success",
             exit_code=0,
@@ -38,8 +39,9 @@ class FakeRuntimeManager:
             cells=[],
         )
 
-    async def run_script(self, path: Path, on_stream=None, secrets=None) -> RunResult:
+    async def run_script(self, path: Path, on_stream=None, secrets=None, timeout=None) -> RunResult:
         self.last_secrets = secrets
+        self.last_timeout = timeout
         return RunResult(
             status="success",
             exit_code=0,
@@ -48,8 +50,9 @@ class FakeRuntimeManager:
             cells=[],
         )
 
-    async def run_notebook(self, path: Path, on_stream=None, on_cell_start=None, secrets=None) -> RunResult:
+    async def run_notebook(self, path: Path, on_stream=None, on_cell_start=None, secrets=None, timeout=None) -> RunResult:
         self.last_secrets = secrets
+        self.last_timeout = timeout
         return RunResult(
             status="success",
             exit_code=0,
@@ -142,6 +145,16 @@ def test_run_inline_json(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert '"status": "success"' in result.stdout
+
+
+def test_run_with_timeout_flag(monkeypatch) -> None:
+    mgr = FakeRuntimeManager()
+    monkeypatch.setattr("colab_cli.cli.run.create_runtime_manager", lambda **kwargs: mgr)
+
+    result = runner.invoke(app, ["run", "--code", "print('hi')", "--timeout", "45", "--json"])
+
+    assert result.exit_code == 0
+    assert mgr.last_timeout == 45.0
 
 
 def test_run_with_secret_flag(monkeypatch) -> None:

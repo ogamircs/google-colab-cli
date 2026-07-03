@@ -292,6 +292,30 @@ async def test_execute_maps_mid_run_disconnect_to_runtime_error(monkeypatch: pyt
         await _ws_client().execute("print(1)")
 
 
+@pytest.mark.asyncio
+async def test_execute_maps_idle_timeout_to_execution_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import colab_cli.core.jupyter.ws as ws_mod
+
+    class SilentWebSocket:
+        async def send(self, _: str) -> None:
+            return None
+
+        async def recv(self) -> str:
+            await asyncio.sleep(60)
+            return "{}"
+
+    monkeypatch.setattr(
+        ws_mod.websockets,
+        "connect",
+        lambda *a, **k: _ConnectCM(websocket=SilentWebSocket()),
+    )
+
+    with pytest.raises(ExecutionError, match="0.01"):
+        await _ws_client().execute("print(1)", timeout_seconds=0.01)
+
+
 def test_extract_code_cells_returns_only_code_sources(tmp_path: Path) -> None:
     notebook_path = tmp_path / "example.ipynb"
     notebook_path.write_text(
