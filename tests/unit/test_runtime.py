@@ -577,6 +577,66 @@ async def test_execute_cell_reuses_kernel_across_calls(tmp_path: Path) -> None:
     assert kernel_client.calls == ["print(1)", "print(2)"]
 
 
+class ClosableJupyterClient(FakeJupyterRestClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_jupyter_client_closed_when_upload_fails(tmp_path: Path) -> None:
+    from colab_cli.errors import ConnectionError
+
+    class FailingClient(ClosableJupyterClient):
+        async def upload_file(self, local_path: Path, remote_path: str):
+            raise ConnectionError("proxy exploded")
+
+    client = FailingClient()
+    local = tmp_path / "f.txt"
+    local.write_text("data")
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: client,
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ConnectionError):
+        await manager.push_file(local, "/content/f.txt")
+
+    assert client.closed
+
+
+@pytest.mark.asyncio
+async def test_jupyter_client_closed_when_create_session_fails(tmp_path: Path) -> None:
+    from colab_cli.errors import ColabRuntimeError
+
+    class FailingClient(ClosableJupyterClient):
+        async def create_session(self, **kwargs: object):
+            raise ColabRuntimeError("runtime reclaimed")
+
+    client = FailingClient()
+    manager = RuntimeManager(
+        config=make_config(),
+        credentials=FakeCredentials(),
+        connection_store=_connected_store(tmp_path),
+        colab_client_factory=FakeColabClient,
+        jupyter_rest_factory=lambda **_: client,
+        kernel_client_factory=lambda **_: FakeKernelClient(),
+        spawn_keepalive=False,
+    )
+
+    with pytest.raises(ColabRuntimeError):
+        await manager.run_code("print(1)")
+
+    assert client.closed
+
+
 @pytest.mark.asyncio
 async def test_run_code_forwards_timeout_to_kernel(tmp_path: Path) -> None:
     kernel_client = FakeKernelClient()

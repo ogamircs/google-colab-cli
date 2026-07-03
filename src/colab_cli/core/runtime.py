@@ -8,7 +8,8 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -289,38 +290,18 @@ class RuntimeManager:
 
     async def push_file(self, local_path: Path, remote_path: str) -> None:
         connection = await self._ensure_connection()
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        await client.upload_file(local_path, remote_path)
-        await _maybe_aclose(client)
+        async with self._jupyter_client(connection) as client:
+            await client.upload_file(local_path, remote_path)
 
     async def pull_file(self, remote_path: str, local_path: Path) -> Path:
         connection = await self._ensure_connection()
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        result = await client.download_file(remote_path, local_path)
-        await _maybe_aclose(client)
-        return result
+        async with self._jupyter_client(connection) as client:
+            return await client.download_file(remote_path, local_path)
 
     async def list_files(self, remote_path: str = "") -> list[Any]:
         connection = await self._ensure_connection()
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        items = await client.list_directory(remote_path)
-        await _maybe_aclose(client)
-        return items
+        async with self._jupyter_client(connection) as client:
+            return await client.list_directory(remote_path)
 
     async def keepalive_once(self) -> StatusResult:
         connection = self.connection_store.load()
@@ -350,6 +331,19 @@ class RuntimeManager:
         finally:
             await _maybe_aclose(client)
         return self.status()
+
+    @asynccontextmanager
+    async def _jupyter_client(self, connection: ActiveConnection) -> AsyncIterator[Any]:
+        token = self.credentials.get_valid_token()
+        client = self._jupyter_rest_factory(
+            base_url=connection.proxy_url,
+            access_token=token.access_token,
+            proxy_token=connection.proxy_token,
+        )
+        try:
+            yield client
+        finally:
+            await _maybe_aclose(client)
 
     def _make_kernel_client(self, connection: ActiveConnection) -> Any:
         token = self.credentials.get_valid_token()
@@ -402,18 +396,12 @@ class RuntimeManager:
         if connection.session_id and connection.kernel_id:
             return connection
 
-        token = self.credentials.get_valid_token()
-        client = self._jupyter_rest_factory(
-            base_url=connection.proxy_url,
-            access_token=token.access_token,
-            proxy_token=connection.proxy_token,
-        )
-        session = await client.create_session(
-            path=f"/content/{source_name}",
-            name=source_name,
-            session_type="notebook",
-        )
-        await _maybe_aclose(client)
+        async with self._jupyter_client(connection) as client:
+            session = await client.create_session(
+                path=f"/content/{source_name}",
+                name=source_name,
+                session_type="notebook",
+            )
         return self._persist_fields(
             connection,
             session_id=session.id,
